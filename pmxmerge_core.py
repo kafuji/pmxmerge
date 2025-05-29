@@ -50,6 +50,8 @@ def detect_duplicate_elements(model: pmx.Model) -> bool:
     ret |= check(model.bones)
     ret |= check(model.materials)
     ret |= check(model.morphs)
+    ret |= check(model.rigids)
+    ret |= check(model.joints)
 
     return ret
 
