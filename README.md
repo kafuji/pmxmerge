@@ -44,7 +44,7 @@ Note: You need pmxmerge_core.py and pmx.py int the same directory as pmxmerge_cu
 | `--replace_bones` | Option to replace existing bone settings. Without it, existing bone settings will be preserved. |
 | `--merge_physics` | Option to merge rigid bodies and joints. If not specified, they will be skipped. |
 
-These options are available as checkboxes in the GUI, but can also be specified via command line arguments:
+These options are available as checkboxes in the GUI.
 
 ```bash
 python pmxmerge_cui.py --base base.pmx --patch patch.pmx --out result.pmx --replace_bones --merge_physics
