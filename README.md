@@ -1,6 +1,6 @@
 # PMXMerge
 
-**PMXMerge** is a standalone tool for merging two PMX (Polygon Model eXtended) models.
+**PMXMerge** is a tool for merging two PMX (Polygon Model eXtended) models.
 
 It is specifically designed for use cases where parts of a model have been exported separately (e.g., from Blender via `mmd_tools`) and need to be merged back into the original model while preserving data such as bones, morphs, and materials.
 
@@ -9,8 +9,7 @@ You can also use it to make an chimera model by merging multiple PMX files toget
 ## Features
 
 * Merges bones, materials (and their vertices), morphs, rigid bodies, and joints.
-* Supports merging of models with different numbers of bones, materials, and morphs.
-* Vertex morphs, material morphs, and group morphs are merged intelligently.
+* Vertex morphs, material morphs, and group morphs are merged correctly.
 * New items are appended to the end of the respective lists while preserviing sort order of existing items.
 * Preserves existing bone settings unless explicitly replaced.
 * Merging of Rigid Bodies and Joints is optional and can be skipped if not needed.
