@@ -16,6 +16,13 @@ You can also use it to make an chimera model by merging multiple PMX files toget
 
 ## Example Usage
 
+### GUI version
+
+Run pmxmerge_gui.exe or `python pmxmerge_gui.py` to launch the graphical user interface (GUI) for PMXMerge.
+You can use the GUI to easily merge PMX files without needing to use the command line. The GUI provides a user-friendly interface for selecting files and performing the merge operation. 
+
+You can specify the base PMX file, the patch PMX file, and the output PMX file in the GUI. Drag and drop the files into the GUI or use the file selection dialog to choose the files. Then click the "Merge" button to perform the merge operation. See the console output for any errors or warnings during the merge process.
+
 ### Python version
 
 Example command to merge a base PMX file with a patch PMX file and output the result to a new PMX file:
@@ -25,13 +32,6 @@ python pmxmerge_cui.py --base base.pmx --patch patch.pmx --out result.pmx
 ```
 
 Note: You need pmxmerge_core.py and pmx.py int the same directory as pmxmerge_cui.py to run this command.
-
-### GUI version
-
-Run pmxmerge_gui.exe or `python pmxmerge_gui.py` to launch the graphical user interface (GUI) for PMXMerge.
-You can use the GUI to easily merge PMX files without needing to use the command line. The GUI provides a user-friendly interface for selecting files and performing the merge operation. 
-
-You can specify the base PMX file, the patch PMX file, and the output PMX file in the GUI. Drag and drop the files into the GUI or use the file selection dialog to choose the files. Then click the "Merge" button to perform the merge operation. See the console output for any errors or warnings during the merge process.
 
 ### Arguments
 
