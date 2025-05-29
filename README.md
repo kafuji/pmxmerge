@@ -16,13 +16,15 @@ You can also use it to make an chimera model by merging multiple PMX files toget
 
 ## Example Usage
 
-### Command Line version
+### Python version
 
 Example command to merge a base PMX file with a patch PMX file and output the result to a new PMX file:
 
 ```bash
 python pmxmerge_cui.py --base base.pmx --patch patch.pmx --out result.pmx
 ```
+
+Note: You need pmxmerge_core.py and pmx.py int the same directory as pmxmerge_cui.py to run this command.
 
 ### GUI version
 
