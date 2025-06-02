@@ -15,7 +15,7 @@ You can also use it to make an chimera model by merging multiple PMX files toget
 * Merges bones, materials (and their vertices), morphs, rigid bodies, and joints.
 * Vertex morphs, material morphs, and group morphs are merged correctly.
 * New items are appended to the end of the respective lists while preserving sort order of existing items.
-* Preserves existing bone/material/morph/physics/display group settings unless explicitly replaced.
+* Preserves existing bone/material/morph/physics/display group settings if specified.
 
 ## Example Usage
 
