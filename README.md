@@ -7,7 +7,6 @@ Version: 1.1.0
 **PMXMerge** is a tool for merging two PMX (Polygon Model eXtended) models.
 
 It is specifically designed for use cases where parts of a model have been exported separately (e.g., from Blender via `mmd_tools`) and need to be merged back into the original model while preserving certain settings like bone settings, material settings, morphs, and physics properties.
-It can be used to merge a base PMX model with a patch PMX model, where the patch model contains additional parts or modifications that need to be integrated into the base model.
 
 You can also use it to make an chimera model by merging multiple PMX files together (e.g., merging a base model with props, clothes, and hair models).
 
