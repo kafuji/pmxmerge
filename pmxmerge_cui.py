@@ -33,7 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("--no_update", "-nu", type=str, nargs='*', default=None,
                         help="Features to not update in the base model with the patch model. Any of: " + ", ".join(options_default["update"]))
 
-    parser.add_argument("--version", action='version', version=f'PMX Merge Tool {VERSION}',)
+    parser.add_argument("--version", "-v", action='version', version=f'PMX Merge Tool {VERSION}',)
 
     args = parser.parse_args()
 

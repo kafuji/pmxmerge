@@ -1,8 +1,13 @@
 # PMXMerge
 
+Version: 1.1.0
+
+## About
+
 **PMXMerge** is a tool for merging two PMX (Polygon Model eXtended) models.
 
-It is specifically designed for use cases where parts of a model have been exported separately (e.g., from Blender via `mmd_tools`) and need to be merged back into the original model while preserving data such as bones, morphs, and materials.
+It is specifically designed for use cases where parts of a model have been exported separately (e.g., from Blender via `mmd_tools`) and need to be merged back into the original model while preserving certain settings like bone settings, material settings, morphs, and physics properties.
+It can be used to merge a base PMX model with a patch PMX model, where the patch model contains additional parts or modifications that need to be integrated into the base model.
 
 You can also use it to make an chimera model by merging multiple PMX files together (e.g., merging a base model with props, clothes, and hair models).
 
@@ -10,50 +15,48 @@ You can also use it to make an chimera model by merging multiple PMX files toget
 
 * Merges bones, materials (and their vertices), morphs, rigid bodies, and joints.
 * Vertex morphs, material morphs, and group morphs are merged correctly.
-* New items are appended to the end of the respective lists while preserviing sort order of existing items.
-* Preserves existing bone settings unless explicitly replaced.
-* Merging of Rigid Bodies and Joints is optional and can be skipped if not needed.
+* New items are appended to the end of the respective lists while preserving sort order of existing items.
+* Preserves existing bone/material/morph/physics/display group settings unless explicitly replaced.
 
 ## Example Usage
 
 ### GUI version
 
 Run pmxmerge_gui.exe or `python pmxmerge_gui.py` to launch the graphical user interface (GUI) for PMXMerge.
-You can use the GUI to easily merge PMX files without needing to use the command line. The GUI provides a user-friendly interface for selecting files and performing the merge operation. 
 
-You can specify the base PMX file, the patch PMX file, and the output PMX file in the GUI. Drag and drop the files into the GUI or use the file selection dialog to choose the files. Then click the "Merge" button to perform the merge operation. See the console output for any errors or warnings during the merge process.
+To specify the base and patch PMX files, just drag and drop the files into the GUI or use the file selection dialog to choose the files.
+You can choose which features to append or replace by check boxes in the GUI.
+
+Then click the "Merge" button to perform the merge operation. See the console output for any errors or warnings during the merge process.
 
 ### Python version
 
 Example command to merge a base PMX file with a patch PMX file and output the result to a new PMX file:
 
 ```bash
-python pmxmerge_cui.py --base base.pmx --patch patch.pmx --out result.pmx
+python pmxmerge_cui.py --base base.pmx --patch patch.pmx --out result.pmx --no_append DISPLAY --no_update MORPHS DISPLAY
 ```
 
-Note: You need pmxmerge_core.py and pmx.py int the same directory as pmxmerge_cui.py to run this command.
+Note: You need pmxmerge.py and pmx.py in the same directory as pmxmerge_cui.py to run this script.
 
 ### Arguments
 
-
 | Argument          | Description                                             |
 | ----------------- | ------------------------------------------------------- |
-| `--base`, `-b`    | Path to the base PMX file to merge into (required)      |
+| `--help`, `-h` | Show this help message and exit                          |
+| `--base`, `-b`    | Path to the base PMX file to merge into (required)     |
 | `--patch`, `-p`   | Path to the patch PMX file (required)                   |
-| `--out`, `-o`     | Output PMX file path (overwrite base PMX file if not specified!)   |
-| `--replace_bones` | Option to replace existing bone settings. Without it, existing bone settings will be preserved. |
-| `--merge_physics` | Option to merge rigid bodies and joints. If not specified, they will be skipped. |
+| `--out`, `-o`     | Output PMX file path (Default: result.pmx). Relative to the base PMX file's directory. |
+| `--no_append`, `-a` | Comma-separated list of items to not append (any of `MORPHS PHYSICS DISPLAY`) |
+| `--no_update`, `-u` | Comma-separated list of items to not update (any of `BONE MAT_SETTING MORPHS PHYSICS DISPLAY`) |
+| `--version`, `-v` | Show the version of PMXMerge and exit                   |
 
-These options are available as checkboxes in the GUI.
-
-```bash
-python pmxmerge_cui.py --base base.pmx --patch patch.pmx --out result.pmx --replace_bones --merge_physics
-```
+- Bones will always be appended. 
+- Mesh data (Vertices, Faces, and Vertex/UV Morph) will always be appended and merged into existing materials and corresponding morphs.
 
 ## Notes
 
-* Duplicate element names (bones, materials, morphs, rigid bodies and joints) in the both base and patch models are **not allowed**. Please fix them before merging.
-* Merging Display slot settings are not supported yet.
+* Duplicate/Empty element names (bones, materials, morphs, rigid bodies and joints) in the both base and patch models are **not allowed**. Please fix them before merging.
 * Only supports PMX version 2.0.
 
 ## Disclaimer
