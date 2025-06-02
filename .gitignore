@@ -3,8 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Test forlder
+# Test forlder and files
 test/
+*.pmx
+pmxmerge_settings.json
 
 # C extensions
 *.so

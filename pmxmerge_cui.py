@@ -1,13 +1,22 @@
 import argparse
-from . import pmxmerge_core
+from typing import Dict, Tuple
+
+import pmxmerge
+
+VERSION = "1.1.0"  # Version of the PMX Merge Tool
+
+# Default options for merging PMX models
+options_default: Dict[str, Tuple[str, ...]] = {
+    "append": ('MORPH', 'PHYSICS', 'DISPLAY' ), # Specify which features in the patch model to append to the base model. Bones and materials are always appended.
+    "update": ('BONE', 'MAT_SETTING', 'MORPH', 'PHYSICS', 'DISPLAY'), # Specify which features in the base model to update with the patch model
+}
 
 if __name__ == "__main__":
     # Usage: python pmxmerge.py --base <base.pmx> --patch <patch.pmx> --out <output.pmx>
     # Alias: python pmxmerge.py -b <base.pmx> -p <patch.pmx> -o <output.pmx>
     # Optional arguments:
-    # --replace_bones: Replace bone settings with the patch model's bone settings
-    # --merge_physics: Merge physics features (Rigid Bodies and Joints) from the patch model into the base model
-    # --merge_displaysettings: Merge display settings from the patch model into the base model
+    # --no_append <feature> : Do not append the specified feature from the patch model to the base model.
+    # --no_update <feature> : Do not update the specified feature in the base model with the patch model.
 
     parser = argparse.ArgumentParser(description="Merge PMX models by patching geometry and morphs.")
     parser.add_argument("--base", "-b", type=str, default="",
@@ -15,27 +24,32 @@ if __name__ == "__main__":
     
     parser.add_argument("--patch", "-p", type=str, default="",
                         help="Patch PMX file path to merge. Must be specified.")
-    parser.add_argument("--out", "-o", type=str, default="",
-                        help="Output PMX file path (overwrite the base PMX file if not specified).")
+    parser.add_argument("--out", "-o", type=str, default="result.pmx",
+                        help="Output PMX file path (Default: 'result.pmx'). Relative to the base PMX file's directory.")
 
-    parser.add_argument("--replace_bones", action="store_true",
-                        help="Replace bone settings with the patch model's bone settings.")
+    parser.add_argument("--no_append", "-na", type=str, nargs='*', default=None,
+                        help="Features to not append from the patch model to the base model. Any of: " + ", ".join(options_default["append"]))
 
-    parser.add_argument("--merge_physics", action="store_true",
-                        help="Merge physics features (Rigid Bodies and Joints) from the patch model into the base model.")
-    
-    parser.add_argument("--merge_displaysettings", action="store_true",
-                        help="Merge display settings from the patch model into the base model.")
+    parser.add_argument("--no_update", "-nu", type=str, nargs='*', default=None,
+                        help="Features to not update in the base model with the patch model. Any of: " + ", ".join(options_default["update"]))
+
+    parser.add_argument("--version", action='version', version=f'PMX Merge Tool {VERSION}',)
 
     args = parser.parse_args()
-    path_base = args.base
 
+    # Validate input arguments
+    if args.no_append is None:
+        args.no_append = []
+
+    if args.no_update is None:
+        args.no_update = []
+
+    path_base = args.base
     path_patch = args.patch
     path_out = args.out
 
     if not path_base or not path_patch:
-        print("Error: Both --base and --patch arguments must be specified.")
-        print("Usage: python pmxmerge.py --base <base.pmx> --patch <patch.pmx> --out <output.pmx>")
+        print("Error: Both base and patch PMX files must be specified.")
         exit()
 
     if path_base == path_patch:
@@ -45,10 +59,20 @@ if __name__ == "__main__":
     if not path_out:
         path_out = path_base
 
-    ret, msg = pmxmerge_core.merge_pmx_files(path_base, path_patch, path_out,
-                                              replace_bones=args.replace_bones,
-                                              merge_phys=args.merge_physics,
-                                              merge_disp=args.merge_displaysettings)
+    # Build options for merging, the function expects positive lists, so we need to invert the logic
+    append = options_default["append"]
+    if args.no_append:
+        append = [feature for feature in options_default["append"] if feature not in args.no_append]
+    update = options_default["update"]
+    if args.no_update:
+        update = [feature for feature in options_default["update"] if feature not in args.no_update]
+
+    # if both append and update are empty, exit
+    if not append and not update:
+        print("Info: No features to append or update. Exiting without merging.")
+        exit()
+
+    ret, msg = pmxmerge.merge_pmx_files(path_base, path_patch, path_out, append=append, update=update)
     if not ret:
         print(f"Error: {msg}")
         exit()

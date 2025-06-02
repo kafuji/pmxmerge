@@ -1,18 +1,155 @@
 # -*- coding: utf-8 -*-
-'''
-PMX file format reader/writer
-Code modified from:
-https://github.com/powroupi/blender_mmd_tools
-'''
+# Copyright 2014 MMD Tools authors
+# This file is part of MMD Tools.
 
-import struct,logging
-from typing import List, Tuple
+# Modified by Kafuji Sato
+# Changes:
+# - Added NamedList class for named elements (Bone, Material, Morph, etc.)
+# - Reference to Vertices changed to vertex object references instead of indices.
+# - Reference to Bones, Materials, Morphs, DisplayItems, RigidBodies, and Joints changed to name instead of index (Blender's convention)
+# - Material have corresponding faces instead of just vertex count.
+# - Changed load/save functions to reflect the new structure.
+# - Added type annotations for better clarity.
 
-# logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+from __future__ import annotations
 
+import logging
+import struct
+from typing import (Dict, Generic, Iterable, List, Optional, Tuple, TypeVar,
+                    Union, overload)
+
+
+##################################################################################
+# Basic container for named elements with O(1) access by name.
+T = TypeVar('T')
+class NamedElements(list[T], Generic[T]):
+    """
+    A list that allows accessing elements by name in O(1).
+    All elements must have a non-empty, unique 'name' attribute.
+    """
+    __slots__ = ("_name_cache",)
+    
+    def __init__(self, items: Iterable[T] = ()):
+        super().__init__()
+        self._name_cache: Dict[str, Tuple[int, T]] = {}
+        for item in items:
+            self._validate_item(item)
+            super().append(item)
+        self._rebuild_cache()
+
+    def _validate_item(self, item: T):
+        if not hasattr(item, "name"):
+            raise ValueError("Item has no 'name' attribute.")
+        if not item.name:
+            raise ValueError("Empty name is not allowed.")
+
+    def _rebuild_cache(self):
+        """Rebuild the name-to-(index, item) cache."""
+        self._name_cache.clear()
+        for idx, item in enumerate(self):
+            self._name_cache[item.name] = (idx, item)
+
+    def __repr__(self):
+        names = [str(item.name) for item in self]
+        return f"<NamedElementListWithCache(names={names})>"
+
+    @overload
+    def __getitem__(self, idx: int) -> T: ...
+
+    @overload
+    def __getitem__(self, idx: slice) -> NamedElements[T]: ...
+
+    def __getitem__( self, idx: Union[int, slice, str] ) -> Union[T, NamedElements[T]]:
+        if isinstance(idx, str):
+            entry = self._name_cache.get(idx)
+            if entry is None:
+                raise KeyError(f"Name '{idx}' not found.")
+            return entry[1]
+
+        result = super().__getitem__(idx)
+        if isinstance(idx, slice):
+            return NamedElements(result)
+        else:
+            return result
+
+    def __setitem__(self, idx: Union[int, slice], value: Union[T, Iterable[T]]):
+        if isinstance(idx, int):
+            self._validate_item(value)
+            super().__setitem__(idx, value)
+        else:
+            new_items = list(value)
+            for item in new_items:
+                self._validate_item(item)
+            super().__setitem__(idx, new_items)
+        self._rebuild_cache()
+
+    def append(self, item: T):
+        self._validate_item(item)
+        super().append(item)
+        self._rebuild_cache()
+
+    def insert(self, idx: int, item: T):
+        self._validate_item(item)
+        super().insert(idx, item)
+        self._rebuild_cache()
+
+    def extend(self, items: Iterable[T]):
+        for item in items:
+            self._validate_item(item)
+        super().extend(items)
+        self._rebuild_cache()
+
+    def pop(self, idx: int = -1) -> T:
+        item = super().pop(idx)
+        self._rebuild_cache()
+        return item
+
+    def remove(self, item: T):
+        super().remove(item)
+        self._rebuild_cache()
+
+    def __delitem__(self, idx: Union[int, slice]):
+        super().__delitem__(idx)
+        self._rebuild_cache()
+
+    def clear(self):
+        super().clear()
+        self._rebuild_cache()
+
+    def __contains__(self, key: Union[str, T]) -> bool:
+        if isinstance(key, str):
+            return key in self._name_cache
+        return super().__contains__(key)
+
+    def get(self, name: str, default: Optional[T] = None) -> Optional[T]:
+        """Get an element by its name in O(1)."""
+        entry = self._name_cache.get(name)
+        return entry[1] if entry else default
+
+    def name_by_index(self, index: int ) -> Optional[str]:
+        """Get the name of an element by its index in O(1). Returns None if not found."""
+        if 0 <= index < len(self):
+            return self[index].name
+        return None
+
+    def find(self, name: str) -> int:
+        """Get the index of an element by its name in O(1). Returns -1 if not found."""
+        entry = self._name_cache.get(name)
+        return entry[0] if entry else -1
+
+    def validate(self):
+        seen_names = set()
+        for i, item in enumerate(self):
+            if not item.name:
+                raise ValueError(f"Empty name at index {i}.")
+            if item.name in seen_names:
+                raise ValueError(f"Duplicate name '{item.name}' at index {i}.")
+            seen_names.add(item.name)
+
+
+##################################################################################
 class InvalidFileError(Exception):
     pass
-
 class UnsupportedVersionError(Exception):
     pass
 
@@ -20,7 +157,7 @@ class FileStream:
     def __init__(self, path, file_obj, pmx_header):
         self.__path = path
         self.__file_obj = file_obj
-        self.__header = pmx_header
+        self.__header: Optional[Header] = pmx_header
 
     def __enter__(self):
         return self
@@ -33,7 +170,7 @@ class FileStream:
 
     def header(self):
         if self.__header is None:
-            raise Exception("Header is not set")
+            raise Exception
         return self.__header
 
     def setHeader(self, pmx_header):
@@ -41,7 +178,6 @@ class FileStream:
 
     def close(self):
         if self.__file_obj is not None:
-            logging.debug('close the file("%s")', self.__path)
             self.__file_obj.close()
             self.__file_obj = None
 
@@ -99,19 +235,15 @@ class FileReadStream(FileStream):
 
     def readStr(self):
         length = self.readInt()
-        fmt = '<' + str(length) + 's'
-        buf, = struct.unpack(fmt, self.__fin.read(length))
-        return str(buf, self.header().encoding.charset)
+        buf, = struct.unpack('<%ds'%length, self.__fin.read(length))
+        return str(buf, self.header().encoding.charset, errors='replace')
 
     def readFloat(self):
         v, = struct.unpack('<f', self.__fin.read(4))
         return v
 
     def readVector(self, size):
-        fmt = '<'
-        for i in range(size):
-            fmt += 'f'
-        return list(struct.unpack(fmt, self.__fin.read(4*size)))
+        return struct.unpack('<'+'f'*size, self.__fin.read(4*size))
 
     def readByte(self):
         v, = struct.unpack('<B', self.__fin.read(1))
@@ -123,6 +255,9 @@ class FileReadStream(FileStream):
     def readSignedByte(self):
         v, = struct.unpack('<b', self.__fin.read(1))
         return v
+
+    def current_pos(self):
+        return self.__fin.tell()
 
 class FileWriteStream(FileStream):
     def __init__(self, path, pmx_header=None):
@@ -180,11 +315,7 @@ class FileWriteStream(FileStream):
         self.__fout.write(struct.pack('<f', float(v)))
 
     def writeVector(self, v):
-        l = len(v)
-        fmt = '<'
-        for i in range(l):
-            fmt += 'f'
-        self.__fout.write(struct.pack(fmt, *v))
+        self.__fout.write(struct.pack('<'+'f'*len(v), *v))
 
     def writeByte(self, v):
         self.__fout.write(struct.pack('<B', int(v)))
@@ -194,6 +325,10 @@ class FileWriteStream(FileStream):
 
     def writeSignedByte(self, v):
         self.__fout.write(struct.pack('<b', int(v)))
+    
+    def current_pos(self):
+        return self.__fout.tell()
+
 
 class Encoding:
     _MAP = [
@@ -222,11 +357,6 @@ class Encoding:
     def __repr__(self):
         return '<Encoding charset %s>'%self.charset
 
-class Coordinate:
-    """ """
-    def __init__(self, xAxis, zAxis):
-        self.x_axis = xAxis
-        self.z_axis = zAxis
 
 class Header:
     PMX_SIGN = b'PMX '
@@ -248,14 +378,14 @@ class Header:
         if model is not None:
             self.updateIndexSizes(model)
 
-    def updateIndexSizes(self, model):
-        self.additional_uvs = len(model.vertices[0].additional_uvs) if model.vertices else 0
+    def updateIndexSizes(self, model: Model):
         self.vertex_index_size = self.__getIndexSize(len(model.vertices), False)
         self.texture_index_size = self.__getIndexSize(len(model.textures), True)
         self.material_index_size = self.__getIndexSize(len(model.materials), True)
         self.bone_index_size = self.__getIndexSize(len(model.bones), True)
         self.morph_index_size = self.__getIndexSize(len(model.morphs), True)
         self.rigid_index_size = self.__getIndexSize(len(model.rigids), True)
+        self.additional_uvs = model.additional_uvs
 
     @staticmethod
     def __getIndexSize(num, signed):
@@ -269,21 +399,16 @@ class Header:
         else:
             return 4
 
-    def load(self, fs):
-        #logging.info('loading pmx header information...')
+    def load(self, fs: FileReadStream):
         self.sign = fs.readBytes(4)
-        logging.debug('File signature is %s', self.sign)
-        if self.sign != self.PMX_SIGN:
-            #logging.info('File signature is invalid')
-            logging.error('This file is unsupported format, or corrupt file.')
+        if self.sign[:3] != self.PMX_SIGN[:3]:
             raise InvalidFileError('File signature is invalid.')
         self.version = fs.readFloat()
-        #logging.info('pmx format version: %f', self.version)
         if self.version != self.VERSION:
-            logging.error('PMX version %.1f is unsupported', self.version)
             raise UnsupportedVersionError('unsupported PMX version: %.1f'%self.version)
-        if fs.readByte() != 8:
-            raise InvalidFileError('PMX version is not 2.0')
+        if fs.readByte() != 8 or self.sign[3] != self.PMX_SIGN[3]:
+            raise InvalidFileError('File header is invalid or corrupted.')
+
         self.encoding = Encoding(fs.readByte())
         self.additional_uvs = fs.readByte()
         self.vertex_index_size = fs.readByte()
@@ -293,21 +418,7 @@ class Header:
         self.morph_index_size = fs.readByte()
         self.rigid_index_size = fs.readByte()
 
-        #logging.info('----------------------------')
-        #logging.info('pmx header information')
-        #logging.info('----------------------------')
-        #logging.info('pmx version: %.1f', self.version)
-        #logging.info('encoding: %s', str(self.encoding))
-        #logging.info('number of uvs: %d', self.additional_uvs)
-        #logging.info('vertex index size: %d byte(s)', self.vertex_index_size)
-        #logging.info('texture index: %d byte(s)', self.texture_index_size)
-        #logging.info('material index: %d byte(s)', self.material_index_size)
-        #logging.info('bone index: %d byte(s)', self.bone_index_size)
-        #logging.info('morph index: %d byte(s)', self.morph_index_size)
-        #logging.info('rigid index: %d byte(s)', self.rigid_index_size)
-        #logging.info('----------------------------')
-
-    def save(self, fs):
+    def save(self, fs: FileWriteStream):
         fs.writeBytes(self.PMX_SIGN)
         fs.writeFloat(self.VERSION)
         fs.writeByte(8)
@@ -332,329 +443,270 @@ class Header:
             self.rigid_index_size,
             )
 
+
+################################################################################
+# Model Root Class
+################################################################################
 class Model:
     def __init__(self):
+        self.filepath = ""
         self.header = None
 
-        self.name = ''
-        self.name_e = ''
-        self.comment = ''
-        self.comment_e = ''
+        self.name = ""
+        self.name_e = ""
+        self.comment = ""
+        self.comment_e = ""
 
         self.vertices: List[Vertex] = []
-        self.faces: List[Tuple[int, int, int]] = []
+        self.faces: List[Face] = []
         self.textures: List[Texture] = []
-        self.materials: List[Material] = []
-        self.bones: List[Bone] = []
-        self.morphs: List[Morph] = []
+        self.materials: NamedElements[Material] = NamedElements[Material]()
+        self.bones: NamedElements[Bone] = NamedElements[Bone]()
+        self.morphs: NamedElements[Morph] = NamedElements[Morph]()
 
-        self.display: List[Display] = []
-        dsp_root = Display()
-        dsp_root.isSpecial = True
-        dsp_root.name = 'Root'
-        dsp_root.name_e = 'Root'
-        self.display.append(dsp_root)
-        dsp_face = Display()
-        dsp_face.isSpecial = True
-        dsp_face.name = '表情'
-        dsp_face.name_e = ''
-        self.display.append(dsp_face)
+        self.displaygroup: NamedElements[DisplayGroup] = NamedElements[DisplayGroup]()
 
-        self.rigids: List[Rigid] = []
-        self.joints: List[Joint] = []
+        self.rigids: NamedElements[RigidBody] = NamedElements[RigidBody]()
+        self.joints: NamedElements[Joint] = NamedElements[Joint]()
 
-    def load(self, fs):
+        # Index maps for fast lookup, Should be initialized before use
+        self.vert_index_map: Dict[Vertex, int] = {}
+        self.tex_index_map: Dict[Texture, int] = {}
+
+        # Additional UVs count
+        self.additional_uvs: int = 0
+
+    ##################################################################################
+    # Index access functions (used by load() function of each class to deserialize data.
+    def tex_by_index(self, index:int) -> Texture: # Allow unset (-1) index. Out of range should raise IndexError.
+        return self.textures[index] if 0 <= index else None
+
+    ################################################################################
+    # Index Lookup functions (used by save() function of each class to serialize data.
+
+    def ensure_lookup_table(self):
+        """Ensure lookup tables for fast index access are initialized."""
+        # Use instance as reference for vertices and textures
+        self.vert_index_map = {vert: i for i, vert in enumerate(self.vertices)}
+        self.tex_index_map = {tex: i for i, tex in enumerate(self.textures)}
+
+    # Index lookup functions
+    def vert_index(self, v: Vertex) -> int: # raise KeyError if v is not in the model
+        return self.vert_index_map[v]
+
+    def tex_index(self, t: Texture) -> int: # Return -1 if texture is not found (unset)
+        return self.tex_index_map.get(t, -1)  
+
+
+    ################################################################################
+    def load(self, fs: FileReadStream):
+        if self.filepath != "":
+            raise ValueError(f"Model already loaded from {self.filepath}. Please create a new Model instance to load another file.")
+
+        logging.debug("======== Loading Model ========")
+
+        self.filepath = fs.path()
+        self.header = fs.header()
+        self.additional_uvs = self.header.additional_uvs # Store additional UVs count
+
         self.name = fs.readStr()
         self.name_e = fs.readStr()
 
         self.comment = fs.readStr()
         self.comment_e = fs.readStr()
 
-        #logging.info('Model name: %s', self.name)
-        #logging.info('Model name(english): %s', self.name_e)
-        #logging.info('Comment:%s', self.comment)
-        #logging.info('Comment(english):%s', self.comment_e)
-
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info('Load Vertices')
-        #logging.info('------------------------------')
+        ########################################
+        # Load Vertices
         num_vertices = fs.readInt()
-        self.vertices: List[Vertex] = []
         for i in range(num_vertices):
             v = Vertex()
-            v.load(fs)
+            v.load(fs) # Vertex has reference to bones, but we don't pass self here because it will be set later
             self.vertices.append(v)
-        #logging.info('----- Loaded %d vertices', len(self.vertices))
+        logging.debug(f"Loaded {len(self.vertices)}")
 
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info(' Load Faces')
-        #logging.info('------------------------------')
+
+        ########################################
+        # Load Faces
         num_faces = fs.readInt()
-        self.faces: List[Tuple[int, int, int]] = []
         for i in range(int(num_faces/3)):
-            f1 = fs.readVertexIndex()
-            f2 = fs.readVertexIndex()
-            f3 = fs.readVertexIndex()
-            self.faces.append((f3, f2, f1))
-        #logging.info(' Load %d faces', len(self.faces))
+            face = Face()
+            face.load(fs, self)
+            self.faces.append(face)
+        logging.debug(f"Loaded {len(self.faces)} faces")
 
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info(' Load Textures')
-        #logging.info('------------------------------')
+
+        ########################################
+        # Load Textures
         num_textures = fs.readInt()
-        self.textures: List[Texture] = []
         for i in range(num_textures):
             t = Texture()
-            t.load(fs)
+            t.load(fs) # Texture has no reference to Model elements, so we don't pass self
             self.textures.append(t)
-            #logging.info('Texture %d: %s', i, t.path)
-        #logging.info(' ----- Loaded %d textures', len(self.textures))
+        logging.debug(f"Loaded {len(self.textures)} textures")
 
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info(' Load Materials')
-        #logging.info('------------------------------')
+
+        ########################################
+        # Load Materials
         num_materials = fs.readInt()
-        self.materials: List[Material] = []
         for i in range(num_materials):
             m = Material()
-            m.load(fs)
+            m.load(fs, self)
             self.materials.append(m)
+        logging.debug(f"Loaded {len(self.materials)} materials")
 
-            #logging.info('Material %d: %s', i, m.name)
-            logging.debug('  Name(english): %s', m.name_e)
-            logging.debug('  Comment: %s', m.comment)
-            logging.debug('  Vertex Count: %d', m.vertex_count)
-            logging.debug('  Diffuse: (%.2f, %.2f, %.2f, %.2f)', *m.diffuse)
-            logging.debug('  Specular: (%.2f, %.2f, %.2f, %.2f)', *m.specular)
-            logging.debug('  Ambient: (%.2f, %.2f, %.2f)', *m.ambient)
-            logging.debug('  Double Sided: %s', str(m.is_double_sided))
-            logging.debug('  Drop Shadow: %s', str(m.enabled_drop_shadow))
-            logging.debug('  Self Shadow: %s', str(m.enabled_self_shadow))
-            logging.debug('  Self Shadow Map: %s', str(m.enabled_self_shadow_map))
-            logging.debug('  Edge: %s', str(m.enabled_toon_edge))
-            logging.debug('  Edge Color: (%.2f, %.2f, %.2f, %.2f)', *m.edge_color)
-            logging.debug('  Edge Size: %.2f', m.edge_size)
-            if m.texture != -1:
-                logging.debug('  Texture Index: %d', m.texture)
-            else:
-                logging.debug('  Texture: None')
-            if m.sphere_texture != -1:
-                logging.debug('  Sphere Texture Index: %d', m.sphere_texture)
-                logging.debug('  Sphere Texture Mode: %d', m.sphere_texture_mode)
-            else:
-                logging.debug('  Sphere Texture: None')
-            logging.debug('')
+        # Set faces to materials
+        segment_start = 0
+        for mat in self.materials:
+            segment_end = segment_start + mat.vertex_count // 3
+            mat.faces = self.faces[segment_start:segment_end]
+            segment_start = segment_end
+        
+        del self.faces  # Clear master face list, as materials now own their faces
 
-        #logging.info('----- Loaded %d  materials.', len(self.materials))
-
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info(' Load Bones')
-        #logging.info('------------------------------')
+        ########################################
+        # Load Bones
         num_bones = fs.readInt()
-        self.bones: List[Bone] = []
         for i in range(num_bones):
             b = Bone()
-            b.load(fs)
+            b.load(fs, self)
             self.bones.append(b)
+        logging.debug(f"Loaded {len(self.bones)} bones")
 
-            #logging.info('Bone %d: %s', i, b.name)
-            logging.debug('  Name(english): %s', b.name_e)
-            logging.debug('  Location: (%f, %f, %f)', *b.location)
-            logging.debug('  Parent: %s', str(b.parent))
-            logging.debug('  Transform Order: %s', str(b.transform_order))
-            logging.debug('  Rotatable: %s', str(b.isRotatable))
-            logging.debug('  Movable: %s', str(b.isMovable))
-            logging.debug('  Visible: %s', str(b.visible))
-            logging.debug('  Controllable: %s', str(b.isControllable))
-            #logging.debug('  Edge: %s', str(m.enabled_toon_edge))
-            logging.debug('  Additional Location: %s', str(b.hasAdditionalRotate))
-            logging.debug('  Additional Rotation: %s', str(b.hasAdditionalRotate))
-            if b.additionalTransform is not None:
-                logging.debug('  Additional Transform: Bone:%d, influence: %f', *b.additionalTransform)
-            logging.debug('  IK: %s', str(b.isIK))
-            if b.isIK:
-                for j, link in enumerate(b.ik_links):
-                    if isinstance(link.minimumAngle, list) and len(link.minimumAngle) == 3:
-                        min_str = '(%f, %f, %f)'%tuple(link.minimumAngle)
-                    else:
-                        min_str = '(None, None, None)'
-                    if isinstance(link.maximumAngle, list) and len(link.maximumAngle) == 3:
-                        max_str = '(%f, %f, %f)'%tuple(link.maximumAngle)
-                    else:
-                        max_str = '(None, None, None)'
-                    logging.debug('    IK Link %d: %d, %s - %s', j, link.target, min_str, max_str)
-            logging.debug('')
-        #logging.info('----- Loaded %d bones.', len(self.bones))
+        # Resolve bones internal references
+        for bone in self.bones:
+            bone.resolve_bone_references(self)
 
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info(' Load Morphs')
-        #logging.info('------------------------------')
+        # Resolve vertices BoneWeight's bone references
+        for v in self.vertices:
+            v.weight.resolve_bone_references(self)
+
+        ########################################
+        # Load Morphs
         num_morph = fs.readInt()
-        self.morphs: List[Morph] = []
-        display_categories = {0: 'System', 1: 'Eyebrow', 2: 'Eye', 3: 'Mouth', 4: 'Other'}
+        # display_categories = {0: 'System', 1: 'Eyebrow', 2: 'Eye', 3: 'Mouth', 4: 'Other'}
         for i in range(num_morph):
-            m = Morph.create(fs)
+            m = Morph.create(fs, self)
             self.morphs.append(m)
+        logging.debug(f"Loaded {len(self.morphs)} morphs")
 
-            #logging.info('%s %d: %s', m.__class__.__name__, i, m.name)
-            logging.debug('  Name(english): %s', m.name_e)
-            logging.debug('  Category: %s', display_categories[m.category])
-            logging.debug('')
-        #logging.info('----- Loaded %d morphs.', len(self.morphs))
 
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info(' Load Display Items')
-        #logging.info('------------------------------')
+        ########################################
+        # Load Display Groups
         num_disp = fs.readInt()
-        self.display: List[Display] = []
         for i in range(num_disp):
-            d = Display()
-            d.load(fs)
-            self.display.append(d)
+            d = DisplayGroup()
+            d.load(fs, self)
+            self.displaygroup.append(d)
+        logging.debug(f"Loaded {len(self.displaygroup)} display groups")
 
-            #logging.info('Display Item %d: %s', i, d.name)
-            logging.debug('  Name(english): %s', d.name_e)
-            logging.debug('')
-        #logging.info('----- Loaded %d display items.', len(self.display))
-
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info(' Load Rigid Bodies')
-        #logging.info('------------------------------')
+        ########################################
+        # Load Rigid Bodies
         num_rigid = fs.readInt()
-        self.rigids = []
-        rigid_types = {0: 'Sphere', 1: 'Box', 2: 'Capsule'}
-        rigid_modes = {0: 'Static', 1: 'Dynamic', 2: 'Dynamic(track to bone)'}
+        # rigid_types = {0: 'Sphere', 1: 'Box', 2: 'Capsule'}
+        # rigid_modes = {0: 'Static', 1: 'Dynamic', 2: 'Dynamic(track to bone)'}
         for i in range(num_rigid):
-            r = Rigid()
-            r.load(fs)
+            r = RigidBody()
+            r.load(fs, self)
             self.rigids.append(r)
-            #logging.info('Rigid Body %d: %s', i, r.name)
-            logging.debug('  Name(english): %s', r.name_e)
-            logging.debug('  Type: %s', rigid_types[r.type])
-            logging.debug('  Mode: %s', rigid_modes[r.mode])
-            if r.bone is not None:
-                logging.debug('  Related bone: %s (index: %d)', self.bones[r.bone].name, r.bone)
-            logging.debug('  Collision group: %d', r.collision_group_number)
-            logging.debug('  Collision group mask: 0x%x', r.collision_group_mask)
-            logging.debug('  Size: (%f, %f, %f)', *r.size)
-            logging.debug('  Location: (%f, %f, %f)', *r.location)
-            logging.debug('  Rotation: (%f, %f, %f)', *r.rotation)
-            logging.debug('  Mass: %f', r.mass)
-            logging.debug('  Bounce: %f', r.bounce)
-            logging.debug('  Friction: %f', r.friction)
-            logging.debug('')
+        logging.debug(f"Loaded {len(self.rigids)} rigid bodies")
 
-        #logging.info('----- Loaded %d rigid bodies.', len(self.rigids))
-
-        #logging.info('')
-        #logging.info('------------------------------')
-        #logging.info(' Load Joints')
-        #logging.info('------------------------------')
+        ########################################
+        # Load Joints
         num_joints = fs.readInt()
-        self.joints = []
         for i in range(num_joints):
             j = Joint()
-            j.load(fs)
+            j.load(fs, self)
             self.joints.append(j)
+        logging.debug(f"Loaded {len(self.joints)} joints")
 
-            #logging.info('Joint %d: %s', i, j.name)
-            logging.debug('  Name(english): %s', j.name_e)
-            logging.debug('  Rigid A: %s (index: %d)', self.rigids[j.src_rigid].name, j.src_rigid) if j.src_rigid is not None else logging.debug('  Rigid A: None')
-            if j.dest_rigid is not None:
-                logging.debug('  Rigid B: %s (index: %d)', self.rigids[j.dest_rigid].name, j.dest_rigid)
-            else:
-                logging.debug('  Rigid B: None')
-            logging.debug('  Location: (%f, %f, %f)', *j.location)
-            logging.debug('  Rotation: (%f, %f, %f)', *j.rotation)
-            logging.debug('  Location Limit: (%f, %f, %f) - (%f, %f, %f)', *(j.minimum_location + j.maximum_location))
-            logging.debug('  Rotation Limit: (%f, %f, %f) - (%f, %f, %f)', *(j.minimum_rotation + j.maximum_rotation))
-            logging.debug('  Spring: (%f, %f, %f)', *j.spring_constant)
-            logging.debug('  Spring(rotation): (%f, %f, %f)', *j.spring_rotation_constant)
-            logging.debug('')
+        return
 
-        #logging.info('----- Loaded %d joints.', len(self.joints))
-
-    def save(self, fs):
+    def save(self, fs: FileWriteStream):
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
 
         fs.writeStr(self.comment)
         fs.writeStr(self.comment_e)
 
-        #logging.info('exporting vertices...')
+        # Ensure lookup table for each list
+        self.purge_deleted_vertices() # Remove deleted vertices before saving
+        self.ensure_lookup_table()
+
+        logging.debug("======== Saving Model ========")
+
+        ##########################################
+        # Save Vertices
         fs.writeInt(len(self.vertices))
         for i in self.vertices:
-            i.save(fs)
-        #logging.info('the number of vetices: %d', len(self.vertices))
-        #logging.info('finished exporting vertices.')
+            i.save(fs, self)
+        logging.debug(f"Saved {len(self.vertices)} vertices")
 
-        #logging.info('exporting faces...')
-        fs.writeInt(len(self.faces)*3)
-        for f3, f2, f1 in self.faces:
-            fs.writeVertexIndex(f1)
-            fs.writeVertexIndex(f2)
-            fs.writeVertexIndex(f3)
-        #logging.info('the number of faces: %d', len(self.faces))
-        #logging.info('finished exporting faces.')
+        ###########################################
+        # Save Faces
 
-        #logging.info('exporting textures...')
+        # Old way: save all faces directly
+        # fs.writeInt(len(self.faces)*3)
+        # for face in self.faces:
+        #     face.save(fs, self)
+
+        # New: Instead of writing the face list directly, we write face lists owned by materials.
+        # So we can sort, remove materials without managing the master face list before saving.
+        num_faces = sum(len(mat.faces) for mat in self.materials)
+        fs.writeInt(num_faces*3)
+        for mat in self.materials:
+            for face in mat.faces:
+                face.save(fs, self)
+        logging.debug(f"Saved {num_faces} faces from {len(self.materials)} materials")
+
+        ##########################################
+        # Save Textures
         fs.writeInt(len(self.textures))
         for i in self.textures:
-            i.save(fs)
-        #logging.info('the number of textures: %d', len(self.textures))
-        #logging.info('finished exporting textures.')
+            i.save(fs) # Texture has no reference to Model elements, so we don't pass self
+        logging.debug(f"Saved {len(self.textures)} textures")
 
-        #logging.info('exporting materials...')
+        ##########################################
+        # Save Materials
         fs.writeInt(len(self.materials))
         for i in self.materials:
-            i.save(fs)
-        #logging.info('the number of materials: %d', len(self.materials))
-        #logging.info('finished exporting materials.')
+            i.save(fs, self)
+        logging.debug(f"Saved {len(self.materials)} materials")
 
-        #logging.info('exporting bones...')
+        ############################################
+        # Save Bones
         fs.writeInt(len(self.bones))
         for i in self.bones:
-            i.save(fs)
-        #logging.info('the number of bones: %d', len(self.bones))
-        #logging.info('finished exporting bones.')
+            i.save(fs, self)
+        logging.debug(f"Saved {len(self.bones)} bones")
 
-        #logging.info('exporting morphs...')
+        ############################################
+        # Save Morphs
         fs.writeInt(len(self.morphs))
         for i in self.morphs:
-            i.save(fs)
-        #logging.info('the number of morphs: %d', len(self.morphs))
-        #logging.info('finished exporting morphs.')
+            i.save(fs, self)
+        logging.debug(f"Saved {len(self.morphs)} morphs")
 
-        #logging.info('exporting display items...')
-        fs.writeInt(len(self.display))
-        for i in self.display:
-            i.save(fs)
-        #logging.info('the number of display items: %d', len(self.display))
-        #logging.info('finished exporting display items.')
+        ############################################
+        # Save Display Groups
+        fs.writeInt(len(self.displaygroup))
+        for i in self.displaygroup:
+            i.save(fs, self)
+        logging.debug(f"Saved {len(self.displaygroup)} display groups")
 
-        #logging.info('exporting rigid bodies...')
+
+        ############################################
+        # Save Rigid Bodies
         fs.writeInt(len(self.rigids))
         for i in self.rigids:
-            logging.debug('  Rigid: %s', i.name)
-            i.save(fs)
-        #logging.info('the number of rigid bodies: %d', len(self.rigids))
-        #logging.info('finished exporting rigid bodies.')
+            i.save(fs, self)
+        logging.debug(f"Saved {len(self.rigids)} rigid bodies")
 
-        #logging.info('exporting joints...')
+        ############################################
+        # Save Joints
         fs.writeInt(len(self.joints))
         for i in self.joints:
-            i.save(fs)
-        #logging.info('the number of joints: %d', len(self.joints))
-        #logging.info('finished exporting joints.')
-        #logging.info('finished exporting the model.')
+            i.save(fs, self)
+        logging.debug(f"Saved {len(self.joints)} joints")
 
 
     def __repr__(self):
@@ -666,16 +718,143 @@ class Model:
             str(self.textures),
             )
 
+
+    ################################################################################
+    # Helper functions for managing model elements
+    ################################################################################
+
+    def append_vertices(self, vertices: List[Vertex]) -> None:
+        """
+        Append a list of vertices to the model. 
+        Index lookup table will not be updated. (use ensure_lookup_table() if needed).
+        """
+        self.vertices.extend(vertices)
+        return
+
+    def remove_material(self, material: Material) -> None:
+        """Remove a material and it's faces, vertices from the model."""
+        if not material in self.materials:
+            raise ValueError(f"Material {material.name} not found in model.")
+
+        # Gather all vertices used by the new faces and other materials
+        verts_used: set[Vertex] = set()
+        for mat in (m for m in self.materials if m is not material):
+            for face in mat.faces:
+                verts_used.update(face.vertices)
+
+        # Mark as deleted all vertices that are not used by any remaining material
+        for v in (v for v in self.vertices if v not in verts_used):
+            v.deleted = True
+
+        # Remove the material and it's faces from the model (material owns faces)
+        self.materials.remove(material)
+        return
+
+
+    def replace_material_faces(self, material: Material, new_faces: List[Face]) -> None:
+        """Replace the faces of a material with new faces. Assuming verts for new faces are already in the model."""
+        if not material in self.materials:
+            raise ValueError(f"Material {material.name} not found in model.")
+
+        # Gather all vertices used by the new faces and other materials
+        verts_used: set[Vertex] = set()
+        for mat in (m for m in self.materials if m is not material):
+            for face in mat.faces:
+                verts_used.update(face.vertices)
+
+        verts_used.update(v for f in new_faces for v in f.vertices)
+
+        # Mark as deleted all vertices that are not used by any remaining material
+        for v in (v for v in self.vertices if v not in verts_used):
+            v.deleted = True
+
+        # Retrieve the new list of faces
+        material.faces = new_faces
+        return
+
+
+    def purge_deleted_vertices( self ) -> None: # Call this before calling ensure_lookup_table()!
+        """
+        Physically remove all vertices marked as deleted from the model.
+        This will also remove any MorphOffset that references deleted vertices.
+        ensure_lookup_table() should be called after this to rebuild the index maps.
+        """
+        # Remove MorphOffset(Vertex and UV) which reference deleted vertices
+        for morph in self.morphs:
+            if isinstance(morph, VertexMorph):
+                morph.offsets = [o for o in morph.offsets if not getattr(o.vertex, "deleted", False)]
+            elif isinstance(morph, UVMorph):
+                morph.offsets = [o for o in morph.offsets if not getattr(o.vertex, "deleted", False)]
+
+        # Physically remove deleted vertices from the master list
+        self.vertices = [v for v in self.vertices if not getattr(v, "deleted", False)]
+        return
+
+    def purge_unused_vertices(self) -> None:
+        """
+        Physically remove vertices that are not referenced by any material faces.
+        This will also remove any MorphOffset that references deleted vertices.
+        ensure_lookup_table() should be called after this to rebuild the index maps.
+        """
+        # Gather all vertices used by the materials
+        verts_used: set[Vertex] = set()
+        for mat in self.materials:
+            for face in mat.faces:
+                verts_used.update(face.vertices)
+
+        # Mark as deleted all vertices that are not used by any material
+        for v in (v for v in self.vertices if v not in verts_used):
+            v.deleted = True
+
+        # Purge deleted vertices
+        self.purge_deleted_vertices()
+        return
+
+    def ensure_texture(self, texture: Union[Texture, str]) -> Texture:
+        """
+        Ensure a texture with the given path exists in the model.
+        Append a new Texture if not found, or return the existing one.
+        """
+        if isinstance(texture, str):
+            texture = Texture(path=texture)
+
+        if texture in self.textures:
+            return texture
+
+        self.textures.append(texture)
+        return texture
+
+    def purge_unused_textures(self) -> None:
+        """
+        Physically remove textures that are not referenced by any material.
+        ensure_lookup_table() should be called after this to rebuild the index maps.
+        """
+        # Gather all textures used by the materials
+        tex_used: set[Texture] = set()
+        for mat in self.materials:
+            tex_used.add(mat.texture)
+
+        # Build a new list of textures that are used
+        self.textures = [t for t in self.textures if t in tex_used]
+        return
+
+
+
 class Vertex:
+    __slots__ = ("deleted","co","normal","uv","additional_uvs","weight","edge_scale")
+
     def __init__(self):
+        self.deleted = False
         self.co = [0.0, 0.0, 0.0]
         self.normal = [0.0, 0.0, 0.0]
         self.uv = [0.0, 0.0]
         self.additional_uvs = []
-        self.weight = None
+        self.weight: BoneWeight = None
         self.edge_scale = 1
 
     def __repr__(self):
+        if self.deleted:
+            return '<Vertex (deleted)>'
         return '<Vertex co %s, normal %s, uv %s, additional_uvs %s, weight %s, edge_scale %s>'%(
             str(self.co),
             str(self.normal),
@@ -685,7 +864,7 @@ class Vertex:
             str(self.edge_scale),
             )
 
-    def load(self, fs):
+    def load(self, fs: FileReadStream):
         self.co = fs.readVector(3)
         self.normal = fs.readVector(3)
         self.uv = fs.readVector(2)
@@ -696,16 +875,23 @@ class Vertex:
         self.weight.load(fs)
         self.edge_scale = fs.readFloat()
 
-    def save(self, fs):
+    def save(self, fs: FileWriteStream, model: Model):
+        if self.deleted:
+            raise ValueError('Cannot save a deleted vertex.')
+
         fs.writeVector(self.co)
         fs.writeVector(self.normal)
         fs.writeVector(self.uv)
         for i in self.additional_uvs:
             fs.writeVector(i)
-        self.weight.save(fs)
+        for i in range(fs.header().additional_uvs-len(self.additional_uvs)):
+            fs.writeVector((0,0,0,0))
+        self.weight.save(fs, model)
         fs.writeFloat(self.edge_scale)
 
+
 class BoneWeightSDEF:
+    __slots__ = ("weight", "c", "r0", "r1")
     def __init__(self, weight=0, c=None, r0=None, r1=None):
         self.weight = weight
         self.c = c
@@ -713,57 +899,33 @@ class BoneWeightSDEF:
         self.r1 = r1
 
 class BoneWeight:
+    __slots__ = ("bone_indices", "bones", "weights", "type")
     BDEF1 = 0
     BDEF2 = 1
     BDEF4 = 2
     SDEF  = 3
 
-    TYPES = [
-        (BDEF1, 'BDEF1'),
-        (BDEF2, 'BDEF2'),
-        (BDEF4, 'BDEF4'),
-        (SDEF, 'SDEF'),
-        ]
-
     def __init__(self):
-        self.bones = []
-        self.weights = []
+        self.bone_indices: List[int] = [] # Resolve after all bones are loaded
+        self.bones: List[str] = []
+        self.weights: List[float] = []
         self.type = self.BDEF1
 
-    def convertIdToName(self, type_id):
-        t = list(filter(lambda x: x[0]==type_id, self.TYPES))
-        if len(t) > 0:
-            return t[0][1]
-        else:
-            return None
 
-    def convertNameToId(self, type_name):
-        t = list(filter(lambda x: x[1]==type_name, self.TYPES))
-        if len(t) > 0:
-            return t[0][0]
-        else:
-            return None
-
-    def load(self, fs):
+    def load(self, fs: FileReadStream ):
         self.type = fs.readByte()
-        self.bones = []
-        self.weights = []
 
         if self.type == self.BDEF1:
-            self.bones.append(fs.readBoneIndex())
+            self.bone_indices.append(fs.readBoneIndex())
         elif self.type == self.BDEF2:
-            self.bones.append(fs.readBoneIndex())
-            self.bones.append(fs.readBoneIndex())
+            self.bone_indices += [fs.readBoneIndex(), fs.readBoneIndex()]
             self.weights.append(fs.readFloat())
         elif self.type == self.BDEF4:
-            self.bones.append(fs.readBoneIndex())
-            self.bones.append(fs.readBoneIndex())
-            self.bones.append(fs.readBoneIndex())
-            self.bones.append(fs.readBoneIndex())
+            for _ in range(4): # BDEF4 has 4 bone indices
+                self.bone_indices.append(fs.readBoneIndex())
             self.weights = fs.readVector(4)
         elif self.type == self.SDEF:
-            self.bones.append(fs.readBoneIndex())
-            self.bones.append(fs.readBoneIndex())
+            self.bone_indices += [fs.readBoneIndex(), fs.readBoneIndex()]
             self.weights = BoneWeightSDEF()
             self.weights.weight = fs.readFloat()
             self.weights.c = fs.readVector(3)
@@ -772,24 +934,30 @@ class BoneWeight:
         else:
             raise ValueError('invalid weight type %s'%str(self.type))
 
-    def save(self, fs):
+    def resolve_bone_references(self, model: Model):
+        """Resolve bone references from indices after all bones are loaded."""
+        self.bones = [model.bones.name_by_index(i) for i in self.bone_indices]
+        del self.bone_indices  # Remove indices after resolving references
+
+
+    def save(self, fs: FileWriteStream, model: Model):
         fs.writeByte(self.type)
         if self.type == self.BDEF1:
-            fs.writeBoneIndex(self.bones[0])
+            fs.writeBoneIndex(model.bones.find(self.bones[0]))
         elif self.type == self.BDEF2:
             for i in range(2):
-                fs.writeBoneIndex(self.bones[i])
+                fs.writeBoneIndex(model.bones.find(self.bones[i]))
             fs.writeFloat(self.weights[0])
         elif self.type == self.BDEF4:
             for i in range(4):
-                fs.writeBoneIndex(self.bones[i])
+                fs.writeBoneIndex(model.bones.find(self.bones[i]))
             for i in range(4):
                 fs.writeFloat(self.weights[i])
         elif self.type == self.SDEF:
             for i in range(2):
-                fs.writeBoneIndex(self.bones[i])
+                fs.writeBoneIndex(model.bones.find(self.bones[i]))
             if not isinstance(self.weights, BoneWeightSDEF):
-                raise ValueError("Invalid weight type")
+                raise ValueError('weights should be BoneWeightSDEF for SDEF type')
             fs.writeFloat(self.weights.weight)
             fs.writeVector(self.weights.c)
             fs.writeVector(self.weights.r0)
@@ -798,23 +966,64 @@ class BoneWeight:
             raise ValueError('invalid weight type %s'%str(self.type))
 
 
-class Texture:
+class Face:
+    __slots__ = ("vertices",)
+
     def __init__(self):
-        self.path = ''
+        self.vertices: List[Vertex] = [None, None, None]
 
     def __repr__(self):
-        return '<Texture path %s>'%str(self.path)
+        return '<Face v1 %s, v2 %s, v3 %s>'%(str(self.vertices[0]), str(self.vertices[1]), str(self.vertices[2]))
 
-    def load(self, fs):
+    def load(self, fs: FileReadStream, model: Model) -> Face:
+        self.vertices[2] = model.vertices[fs.readVertexIndex()] # Stored in reverse order
+        self.vertices[1] = model.vertices[fs.readVertexIndex()]
+        self.vertices[0] = model.vertices[fs.readVertexIndex()]
+
+    def save(self, fs: FileWriteStream, model: Model):
+        fs.writeVertexIndex(model.vert_index(self.vertices[2]))
+        fs.writeVertexIndex(model.vert_index(self.vertices[1]))
+        fs.writeVertexIndex(model.vert_index(self.vertices[0]))
+
+
+class Texture:
+    """
+    Stores tex path string as absolute path.
+    Instances with same path will be considered equal.
+    """
+    # def __convert_to_abs(self, path: str) -> str:
+    #     if not os.path.isabs(path):
+    #         return os.path.normpath(os.path.join(os.getcwd(), path.replace('\\', os.path.sep)))
+    #     return path
+
+    # def __convert_to_rel(self, abs_path: str, base_path: str) -> str:
+    #     try:
+    #         return os.path.relpath(abs_path, start=os.path.dirname(base_path)).replace(os.path.sep, '\\')
+    #     except ValueError:
+    #         return abs_path
+
+    def __init__(self, path: str = "") -> None:
+        self.path: str = path
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Texture):
+            return False
+        return self.path == other.path
+
+    def __hash__(self) -> int:
+        return hash(self.path)
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(path={self.path!r})"
+    
+    def load(self, fs: FileReadStream):
         self.path = fs.readStr()
+        # self.path = self.__convert_to_abs(self.path)  # Ensure path is absolute
 
-    def save(self, fs):
+    def save(self, fs: FileWriteStream):
+        # relPath = self.__convert_to_rel(self.path, fs.path())
         fs.writeStr(self.path)
 
-class SharedTexture(Texture):
-    def __init__(self):
-        self.number = 0
-        self.prefix = ''
 
 class Material:
     SPHERE_MODE_OFF = 0
@@ -828,32 +1037,38 @@ class Material:
 
         self.diffuse = []
         self.specular = []
+        self.shininess = 0
         self.ambient = []
 
-        self.is_double_sided = False
-        self.enabled_drop_shadow = False
-        self.enabled_self_shadow_map = False
-        self.enabled_self_shadow = False
+        self.is_double_sided = True
+        self.enabled_drop_shadow = True
+        self.enabled_self_shadow_map = True
+        self.enabled_self_shadow = True
         self.enabled_toon_edge = False
 
         self.edge_color = []
         self.edge_size = 1
 
-        self.texture = -1
-        self.sphere_texture = -1
+        self.texture: Texture = None
+        self.sphere_texture: Texture = None
         self.sphere_texture_mode = 0
         self.is_shared_toon_texture = True
-        self.toon_texture = 0
+        self.toon_texture: Union[int, Texture] = -1  # Shared toon texture index or Texture object, Default is -1 (shared toon texture but it is not set)
 
         self.comment = ''
+
+        # Geometry
         self.vertex_count = 0
+        self.faces: List[Face] = [] # No Serialize. Set after all materials are loaded
+
 
     def __repr__(self):
-        return '<Material name %s, name_e %s, diffuse %s, specular %s, ambient %s, double_side %s, drop_shadow %s, self_shadow_map %s, self_shadow %s, toon_edge %s, edge_color %s, edge_size %s, toon_texture %s, comment %s>'%(
+        return '<Material name %s, name_e %s, diffuse %s, specular %s, shininess %s, ambient %s, double_side %s, drop_shadow %s, self_shadow_map %s, self_shadow %s, toon_edge %s, edge_color %s, edge_size %s, toon_texture %s, comment %s>'%(
             self.name,
             self.name_e,
             str(self.diffuse),
             str(self.specular),
+            str(self.shininess),
             str(self.ambient),
             str(self.is_double_sided),
             str(self.enabled_drop_shadow),
@@ -863,16 +1078,18 @@ class Material:
             str(self.edge_color),
             str(self.edge_size),
             str(self.texture),
-            #str(self.sphere_texture),
-            #str(self.toon_texture),
+            str(self.sphere_texture),
+            str(self.toon_texture),
             str(self.comment),)
 
-    def load(self, fs):
+
+    def load(self, fs: FileReadStream, model: Model):
         self.name = fs.readStr()
         self.name_e = fs.readStr()
 
         self.diffuse = fs.readVector(4)
-        self.specular = fs.readVector(4)
+        self.specular = fs.readVector(3)
+        self.shininess = fs.readFloat()
         self.ambient = fs.readVector(3)
 
         flags = fs.readByte()
@@ -885,26 +1102,26 @@ class Material:
         self.edge_color = fs.readVector(4)
         self.edge_size = fs.readFloat()
 
-        self.texture = fs.readTextureIndex()
-        self.sphere_texture = fs.readTextureIndex()
+        self.texture = model.tex_by_index(fs.readTextureIndex())
+        self.sphere_texture = model.tex_by_index(fs.readTextureIndex())
         self.sphere_texture_mode = fs.readSignedByte()
 
-        self.is_shared_toon_texture = fs.readSignedByte()
-        self.is_shared_toon_texture = (self.is_shared_toon_texture == 1)
+        self.is_shared_toon_texture = (fs.readSignedByte() == 1)
         if self.is_shared_toon_texture:
             self.toon_texture = fs.readSignedByte()
         else:
-            self.toon_texture = fs.readTextureIndex()
+            self.toon_texture = model.tex_by_index(fs.readTextureIndex())
 
         self.comment = fs.readStr()
         self.vertex_count = fs.readInt()
 
-    def save(self, fs):
+    def save(self, fs: FileWriteStream, model: Model):
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
 
         fs.writeVector(self.diffuse)
         fs.writeVector(self.specular)
+        fs.writeFloat(self.shininess)
         fs.writeVector(self.ambient)
 
         flags = 0
@@ -918,93 +1135,96 @@ class Material:
         fs.writeVector(self.edge_color)
         fs.writeFloat(self.edge_size)
 
-        fs.writeTextureIndex(self.texture)
-        fs.writeTextureIndex(self.sphere_texture)
+        fs.writeTextureIndex(model.tex_index(self.texture))
+        fs.writeTextureIndex(model.tex_index(self.sphere_texture))
         fs.writeSignedByte(self.sphere_texture_mode)
 
         if self.is_shared_toon_texture:
             fs.writeSignedByte(1)
-            fs.writeSignedByte(self.toon_texture)
+            fs.writeSignedByte(self.toon_texture) # This is the index of shared toon texture, -1 means not set.
         else:
             fs.writeSignedByte(0)
-            fs.writeTextureIndex(self.toon_texture)
+            fs.writeTextureIndex(model.tex_index(self.toon_texture))
 
         fs.writeStr(self.comment)
-        fs.writeInt(self.vertex_count)
+        fs.writeInt(len(self.faces) * 3)  # Number of vertices in faces, each face has 3 vertices
+
+
+class Coordinate: # Used by Bone.localCoordinate
+    def __init__(self, xAxis, zAxis):
+        self.x_axis = xAxis
+        self.z_axis = zAxis
 
 
 class Bone:
     def __init__(self):
-        self.name = ''
-        self.name_e = ''
+        self.name = ""
+        self.name_e = ""
 
         self.location = []
-        self.parent = None
+        self.parent_index = -1 # Resolved after loading bones
+        self.parent: str = ""
         self.transform_order = 0
 
-        # 接続先表示方法
-        # 座標オフセット(float3)または、boneIndex(int)
-        self.displayConnection = -1
+        # vector3 or bone for display connection
+        self.displayConnectionType = 0 # 0: Vector, 1: Bone
+        self.displayConnectionBoneIndex: int = -1 # Resolved after loading bones
+        self.displayConnectionBone: str = "" # Resolved after loading bones
+        self.displayConnectionVector: List[float] = [] # Vector3
 
         self.isRotatable = True
         self.isMovable = True
-        self.visible = True
+        self.isVisible = True
         self.isControllable = True
 
         self.isIK = False
 
-        # 回転付与
         self.hasAdditionalRotate = False
-
-        # 移動付与
         self.hasAdditionalLocation = False
 
-        # 回転付与および移動付与の付与量
-        self.additionalTransform = None
+        self.additionalTransformBoneIndex: int = -1 # Resolved after loading bones
+        self.additionalTransformBone: str = "" # Resolved after loading bones
+        self.additionalTransformInfluence: float = 0.0 # Resolved after loading bones
 
-        # 軸固定
-        # 軸ベクトルfloat3
-        self.axis = None
+        self.fixed_axis = None # None or Vector3
 
-        # ローカル軸
-        self.localCoordinate = None
+        self.localCoordinate: Optional[Coordinate] = None # None or Coordinate object
 
-        self.transAfterPhis = False
+        self.transAfterPhys = False
 
-        # 外部親変形
-        self.externalTransKey = None
+        self.externalTransKey: Optional[int] = None
 
-        # 以下IKボーンのみ有効な変数
-        self.target = None
+        self.ik_target_index: int = -1 # Resolved after loading bones
+        self.ik_target: str = ""
         self.loopCount = 8
-        # IKループ計三時の1回あたりの制限角度(ラジアン)
         self.rotationConstraint = 0.03
 
-        # IKLinkオブジェクトの配列
-        self.ik_links = []
+        self.ik_links: List[IKLink] = []
 
     def __repr__(self):
         return '<Bone name %s, name_e %s>'%(
             self.name,
             self.name_e,)
 
-    def load(self, fs):
+    def load(self, fs: FileReadStream, model: Model):
         self.name = fs.readStr()
         self.name_e = fs.readStr()
 
         self.location = fs.readVector(3)
-        self.parent = fs.readBoneIndex()
+        self.parent_index = fs.readBoneIndex()
         self.transform_order = fs.readInt()
 
         flags = fs.readShort()
-        if flags & 0x0001:
-            self.displayConnection = fs.readBoneIndex()
+        if flags & 0x0001: # displayConnection is a Bone
+            self.displayConnectionType = 1
+            self.displayConnectionBoneIndex = fs.readBoneIndex()
         else:
-            self.displayConnection = fs.readVector(3)
+            self.displayConnectionType = 0
+            self.displayConnectionVector = fs.readVector(3)
 
         self.isRotatable    = ((flags & 0x0002) != 0)
         self.isMovable      = ((flags & 0x0004) != 0)
-        self.visible        = ((flags & 0x0008) != 0)
+        self.isVisible        = ((flags & 0x0008) != 0)
         self.isControllable = ((flags & 0x0010) != 0)
 
         self.isIK           = ((flags & 0x0020) != 0)
@@ -1012,17 +1232,14 @@ class Bone:
         self.hasAdditionalRotate = ((flags & 0x0100) != 0)
         self.hasAdditionalLocation = ((flags & 0x0200) != 0)
         if self.hasAdditionalRotate or self.hasAdditionalLocation:
-            t = fs.readBoneIndex()
-            v = fs.readFloat()
-            self.additionalTransform = (t, v)
-        else:
-            self.additionalTransform = None
+            self.additionalTransformBoneIndex = fs.readBoneIndex()
+            self.additionalTransformInfluence = fs.readFloat()
 
 
         if flags & 0x0400:
-            self.axis = fs.readVector(3)
+            self.fixed_axis = fs.readVector(3)
         else:
-            self.axis = None
+            self.fixed_axis = None
 
         if flags & 0x0800:
             xaxis = fs.readVector(3)
@@ -1031,7 +1248,7 @@ class Bone:
         else:
             self.localCoordinate = None
 
-        self.transAfterPhis = ((flags & 0x1000) != 0)
+        self.transAfterPhys = ((flags & 0x1000) != 0)
 
         if flags & 0x2000:
             self.externalTransKey = fs.readInt()
@@ -1039,53 +1256,73 @@ class Bone:
             self.externalTransKey = None
 
         if self.isIK:
-            self.target = fs.readBoneIndex()
+            self.ik_target_index = fs.readBoneIndex()
             self.loopCount = fs.readInt()
             self.rotationConstraint = fs.readFloat()
 
             iklink_num = fs.readInt()
-            self.ik_links = []
+            self.ik_links: List[IKLink] = []
             for i in range(iklink_num):
                 link = IKLink()
-                link.load(fs)
+                link.load(fs, model)
                 self.ik_links.append(link)
 
-    def save(self, fs):
+    def resolve_bone_references(self, model: Model):
+        """Resolve bone references after all bones are loaded."""
+        self.parent = model.bones.name_by_index(self.parent_index)
+        self.displayConnectionBone = model.bones.name_by_index(self.displayConnectionBoneIndex)
+        self.additionalTransformBone = model.bones.name_by_index(self.additionalTransformBoneIndex)
+        if self.isIK:
+            self.ik_target = model.bones.name_by_index(self.ik_target_index)
+            del self.ik_target_index
+
+        del self.parent_index
+        del self.displayConnectionBoneIndex
+        del self.additionalTransformBoneIndex
+
+        # Resolve IK links
+        for link in self.ik_links:
+            link.resolve_bone_references(model)
+
+
+    def save(self, fs: FileWriteStream, model: Model):
+
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
 
         fs.writeVector(self.location)
-        fs.writeBoneIndex(-1 if self.parent is None else self.parent)
+        fs.writeBoneIndex(model.bones.find(self.parent))
         fs.writeInt(self.transform_order)
 
         flags = 0
-        flags |= int(isinstance(self.displayConnection, int))
+        flags |= int(self.displayConnectionType == 1) # 0x0001
         flags |= int(self.isRotatable) << 1
         flags |= int(self.isMovable) << 2
-        flags |= int(self.visible) << 3
+        flags |= int(self.isVisible) << 3
         flags |= int(self.isControllable) << 4
         flags |= int(self.isIK) << 5
 
         flags |= int(self.hasAdditionalRotate) << 8
         flags |= int(self.hasAdditionalLocation) << 9
-        flags |= int(self.axis is not None) << 10
+        flags |= int(self.fixed_axis is not None) << 10
         flags |= int(self.localCoordinate is not None) << 11
 
+        flags |= int(self.transAfterPhys) << 12
         flags |= int(self.externalTransKey is not None) << 13
 
         fs.writeShort(flags)
 
         if flags & 0x0001:
-            fs.writeBoneIndex(self.displayConnection)
+            fs.writeBoneIndex(model.bones.find(self.displayConnectionBone))
         else:
-            fs.writeVector(self.displayConnection)
+            fs.writeVector(self.displayConnectionVector)
 
         if self.hasAdditionalRotate or self.hasAdditionalLocation:
-            fs.writeBoneIndex(self.additionalTransform[0])
-            fs.writeFloat(self.additionalTransform[1])
+            fs.writeBoneIndex(model.bones.find(self.additionalTransformBone))
+            fs.writeFloat(self.additionalTransformInfluence)
 
         if flags & 0x0400:
-            fs.writeVector(self.axis)
+            fs.writeVector(self.fixed_axis)
 
         if flags & 0x0800:
             fs.writeVector(self.localCoordinate.x_axis)
@@ -1095,26 +1332,26 @@ class Bone:
             fs.writeInt(self.externalTransKey)
 
         if self.isIK:
-            fs.writeBoneIndex(self.target)
+            fs.writeBoneIndex(model.bones.find(self.ik_target))
             fs.writeInt(self.loopCount)
             fs.writeFloat(self.rotationConstraint)
 
             fs.writeInt(len(self.ik_links))
             for i in self.ik_links:
-                i.save(fs)
-
+                i.save(fs, model)
 
 class IKLink:
     def __init__(self):
-        self.target = None
+        self.target_index = -1
+        self.target:str = ""
         self.maximumAngle = None
         self.minimumAngle = None
 
     def __repr__(self):
         return '<IKLink target %s>'%(str(self.target))
 
-    def load(self, fs):
-        self.target = fs.readBoneIndex()
+    def load(self, fs: FileReadStream, model: Model):
+        self.target_index = fs.readBoneIndex()
         flag = fs.readByte()
         if flag == 1:
             self.minimumAngle = fs.readVector(3)
@@ -1123,9 +1360,13 @@ class IKLink:
             self.minimumAngle = None
             self.maximumAngle = None
 
-    def save(self, fs):
-        fs.writeBoneIndex(self.target)
-        if isinstance(self.minimumAngle, list) and isinstance(self.maximumAngle, list):
+    def resolve_bone_references(self, model: Model):
+        self.target = model.bones.name_by_index(self.target_index)
+        del self.target_index
+
+    def save(self, fs: FileWriteStream, model: Model):
+        fs.writeBoneIndex(model.bones.find(self.target))
+        if isinstance(self.minimumAngle, (tuple, list)) and isinstance(self.maximumAngle, (tuple, list)):
             fs.writeByte(1)
             fs.writeVector(self.minimumAngle)
             fs.writeVector(self.maximumAngle)
@@ -1137,22 +1378,22 @@ class Morph:
     CATEGORY_EYEBROW = 1
     CATEGORY_EYE = 2
     CATEGORY_MOUTH = 3
-    CATEGORY_OHTER = 4
+    CATEGORY_OTHER = 4
 
-    def __init__(self, name, name_e, category, **kwargs):
-        self.offsets = []
-        self.name = name
-        self.name_e = name_e
-        self.category = category
+    def __init__(self, name: str, name_e: str, category: int, **kwargs):
+        self.offsets: List[Union[VertexMorphOffset, UVMorphOffset, BoneMorphOffset, MaterialMorphOffset]] = []
+        self.name: str = name
+        self.name_e: str = name_e
+        self.category: int = category
 
     def __repr__(self):
         return '<Morph name %s, name_e %s>'%(self.name, self.name_e)
 
     def type_index(self):
-        raise NotImplementedError('Must be implemented in subclass')
+        raise NotImplementedError
 
     @staticmethod
-    def create(fs):
+    def create(fs: FileReadStream, model: Model) -> Morph:
         _CLASSES = {
             0: GroupMorph,
             1: VertexMorph,
@@ -1169,86 +1410,78 @@ class Morph:
         name_e = fs.readStr()
         category = fs.readSignedByte()
         typeIndex = fs.readSignedByte()
-        logging.debug(f" morph: {name} type: {typeIndex} category: {category}")
-
-        if category not in [0, 1, 2, 3, 4]:
-            category = 4 # default to other
-
-        if typeIndex not in _CLASSES:
-            raise ValueError('Invalid morph type %d'%typeIndex)
-        
         ret = _CLASSES[typeIndex](name, name_e, category, type_index = typeIndex)
-        ret.load(fs)
+        ret.load(fs, model)
         return ret
 
-    def load(self, fs):
-        """ Implement for loading morph data.
-        """
-        raise NotImplementedError('Must be implemented in subclass')
+    def load(self, fs: FileReadStream, model: Model):
+        raise NotImplementedError (f"Should be implemented in subclass {self.__class__.__name__}")
 
-    def save(self, fs):
+    def save(self, fs: FileWriteStream, model: Model):
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
         fs.writeSignedByte(self.category)
         fs.writeSignedByte(self.type_index())
         fs.writeInt(len(self.offsets))
         for i in self.offsets:
-            i.save(fs)
+            i.save(fs, model)
 
 class VertexMorph(Morph):
     def __init__(self, *args, **kwargs):
+        self.offsets: List[VertexMorphOffset] = []
         Morph.__init__(self, *args, **kwargs)
 
     def type_index(self):
         return 1
 
-    def load(self, fs):
+    def load(self, fs: FileReadStream, model: Model):
         num = fs.readInt()
         for i in range(num):
             t = VertexMorphOffset()
-            t.load(fs)
+            t.load(fs, model)
             self.offsets.append(t)
 
 class VertexMorphOffset:
     def __init__(self):
-        self.index = 0
-        self.offset = []
+        self.vertex: Vertex = None
+        self.offset: List[float] = []
 
-    def load(self, fs):
-        self.index = fs.readVertexIndex()
+    def load(self, fs: FileReadStream, model: Model):
+        self.vertex = model.vertices[fs.readVertexIndex()]
         self.offset = fs.readVector(3)
 
-    def save(self, fs):
-        fs.writeVertexIndex(self.index)
+    def save(self, fs: FileWriteStream, model: Model):
+        fs.writeVertexIndex(model.vert_index(self.vertex))
         fs.writeVector(self.offset)
 
 class UVMorph(Morph):
     def __init__(self, *args, **kwargs):
         self.uv_index = kwargs.get('type_index', 3) - 3
+        self.offsets: List[UVMorphOffset] = []
         Morph.__init__(self, *args, **kwargs)
 
     def type_index(self):
         return self.uv_index + 3
 
-    def load(self, fs):
-        self.offsets = []
+    def load(self, fs: FileReadStream, model: Model):
+        self.offsets: List[UVMorphOffset] = []
         num = fs.readInt()
         for i in range(num):
             t = UVMorphOffset()
-            t.load(fs)
+            t.load(fs, model)
             self.offsets.append(t)
 
 class UVMorphOffset:
     def __init__(self):
-        self.index = 0
+        self.vertex: Vertex = None
         self.offset = []
 
-    def load(self, fs):
-        self.index = fs.readVertexIndex()
+    def load(self, fs: FileReadStream, model: Model):
+        self.vertex = model.vertices[fs.readVertexIndex()]
         self.offset = fs.readVector(4)
 
-    def save(self, fs):
-        fs.writeVertexIndex(self.index)
+    def save(self, fs: FileWriteStream, model: Model):
+        fs.writeVertexIndex(model.vert_index(self.vertex))
         fs.writeVector(self.offset)
 
 class BoneMorph(Morph):
@@ -1258,29 +1491,41 @@ class BoneMorph(Morph):
     def type_index(self):
         return 2
 
-    def load(self, fs):
-        self.offsets = []
+    def load(self, fs: FileReadStream, model: Model):
+        self.offsets: List[BoneMorphOffset] = []
         num = fs.readInt()
         for i in range(num):
-            t = BoneMorphOffset()
-            t.load(fs)
+            t = BoneMorphOffset(self.name)
+            t.load(fs, model)
             self.offsets.append(t)
 
 class BoneMorphOffset:
-    def __init__(self):
-        self.index = None
-        self.location_offset = []
-        self.rotation_offset = []
+    def __init__(self, owner_name:str):
+        self.owner = owner_name
+        self.bone: str = ""
+        self.location_offset: List[float] = []
+        self.rotation_offset: List[float] = []
 
-    def load(self, fs):
-        self.index = fs.readBoneIndex()
+    def __repr__(self):
+        return '<BoneMorphOffset bone %s, location_offset %s, rotation_offset %s>'%(
+            self.bone,
+            str(self.location_offset),
+            str(self.rotation_offset),
+            )
+
+    def load(self, fs: FileReadStream, model: Model):
+        self.bone = model.bones.name_by_index( fs.readBoneIndex() )
         self.location_offset = fs.readVector(3)
         self.rotation_offset = fs.readVector(4)
 
-    def save(self, fs):
-        fs.writeBoneIndex(self.index)
+        if not any(self.rotation_offset):
+            self.rotation_offset = (0, 0, 0, 1)
+
+    def save(self, fs: FileWriteStream, model: Model):
+        fs.writeBoneIndex(model.bones.find(self.bone))
         fs.writeVector(self.location_offset)
         fs.writeVector(self.rotation_offset)
+
 
 class MaterialMorph(Morph):
     def __init__(self, *args, **kwargs):
@@ -1289,12 +1534,12 @@ class MaterialMorph(Morph):
     def type_index(self):
         return 8
 
-    def load(self, fs):
+    def load(self, fs: FileReadStream, model: Model):
         self.offsets = []
         num = fs.readInt()
         for i in range(num):
             t = MaterialMorphOffset()
-            t.load(fs)
+            t.load(fs, model)
             self.offsets.append(t)
 
 class MaterialMorphOffset:
@@ -1302,10 +1547,11 @@ class MaterialMorphOffset:
     TYPE_ADD = 1
 
     def __init__(self):
-        self.index = 0
+        self.material: str = "" # Referenced by name
         self.offset_type = 0
         self.diffuse_offset = []
         self.specular_offset = []
+        self.shininess_offset = 0
         self.ambient_offset = []
         self.edge_color_offset = []
         self.edge_size_offset = []
@@ -1313,11 +1559,12 @@ class MaterialMorphOffset:
         self.sphere_texture_factor = []
         self.toon_texture_factor = []
 
-    def load(self, fs):
-        self.index = fs.readMaterialIndex()
+    def load(self, fs: FileReadStream, model: Model):
+        self.material = model.materials.name_by_index( fs.readMaterialIndex() )
         self.offset_type = fs.readSignedByte()
         self.diffuse_offset = fs.readVector(4)
-        self.specular_offset = fs.readVector(4)
+        self.specular_offset = fs.readVector(3)
+        self.shininess_offset = fs.readFloat()
         self.ambient_offset = fs.readVector(3)
         self.edge_color_offset = fs.readVector(4)
         self.edge_size_offset = fs.readFloat()
@@ -1325,11 +1572,12 @@ class MaterialMorphOffset:
         self.sphere_texture_factor = fs.readVector(4)
         self.toon_texture_factor = fs.readVector(4)
 
-    def save(self, fs):
-        fs.writeMaterialIndex(self.index)
+    def save(self, fs: FileWriteStream, model: Model):
+        fs.writeMaterialIndex(model.materials.find(self.material))
         fs.writeSignedByte(self.offset_type)
         fs.writeVector(self.diffuse_offset)
         fs.writeVector(self.specular_offset)
+        fs.writeFloat(self.shininess_offset)
         fs.writeVector(self.ambient_offset)
         fs.writeVector(self.edge_color_offset)
         fs.writeFloat(self.edge_size_offset)
@@ -1344,36 +1592,35 @@ class GroupMorph(Morph):
     def type_index(self):
         return 0
 
-    def load(self, fs):
+    def load(self, fs: FileReadStream, model: Model):
         self.offsets = []
         num = fs.readInt()
         for i in range(num):
             t = GroupMorphOffset()
-            t.load(fs)
+            t.load(fs, model)
             self.offsets.append(t)
 
 class GroupMorphOffset:
     def __init__(self):
-        self.morph = None
-        self.factor = 0.0
+        self.morph: str = ""  # Reference by name
+        self.factor: float = 0.0
 
-    def load(self, fs):
-        self.morph = fs.readMorphIndex()
+    def load(self, fs: FileReadStream, model: Model):
+        self.morph = model.morphs.name_by_index(fs.readMorphIndex())
         self.factor = fs.readFloat()
 
-    def save(self, fs):
-        fs.writeMorphIndex(self.morph)
+    def save(self, fs: FileWriteStream, model: Model):
+        fs.writeMorphIndex(model.morphs.find(self.morph))
         fs.writeFloat(self.factor)
 
 
-class Display:
+class DisplayGroup:
     def __init__(self):
-        self.name = ''
-        self.name_e = ''
+        self.name: str = ""
+        self.name_e: str = ""
 
-        self.isSpecial = False
-
-        self.data = []
+        self.isSpecial: bool = False
+        self.items: NamedElements[DisplayItem] = NamedElements[DisplayItem]()  # List of DisplayItem instances
 
     def __repr__(self):
         return '<Display name %s, name_e %s>'%(
@@ -1381,42 +1628,57 @@ class Display:
             self.name_e,
             )
 
-    def load(self, fs):
+    def load(self, fs: FileReadStream, model: Model):
         self.name = fs.readStr()
         self.name_e = fs.readStr()
 
         self.isSpecial = (fs.readByte() == 1)
         num = fs.readInt()
-        self.data = []
+        self.items = NamedElements[DisplayItem]()
         for i in range(num):
-            disp_type = fs.readByte()
-            index = None
-            if disp_type == 0:
-                index = fs.readBoneIndex()
-            elif disp_type == 1:
-                index = fs.readMorphIndex()
-            else:
-                raise Exception('invalid value.')
-            self.data.append((disp_type, index))
-        logging.debug('the number of display elements: %d', len(self.data))
+            item = DisplayItem()
+            item.load(fs, model)
+            self.items.append(item)
 
-    def save(self, fs):
+    def save(self, fs: FileWriteStream, model: Model):
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
 
         fs.writeByte(int(self.isSpecial))
-        fs.writeInt(len(self.data))
+        fs.writeInt(len(self.items))
 
-        for disp_type, index in self.data:
-            fs.writeByte(disp_type)
-            if disp_type == 0:
-                fs.writeBoneIndex(index)
-            elif disp_type == 1:
-                fs.writeMorphIndex(index)
-            else:
-                raise Exception('invalid value.')
+        for item in self.items:
+            item.save(fs, model)
 
-class Rigid:
+
+class DisplayItem:
+    def __init__(self):
+        self.disp_type:int = 0  # 0 for Bone, 1 for Morph
+        self.name: str = ""  # Reference by name, either Bone or Morph
+
+    def __repr__(self):
+        return f'<DisplayItem type {self.disp_type}, item {self.name}>'
+
+    def load(self, fs: FileReadStream, model: Model):
+        self.disp_type = fs.readByte()
+        if self.disp_type == 0:
+            self.name = model.bones.name_by_index(fs.readBoneIndex())
+        elif self.disp_type == 1:
+            self.name = model.morphs.name_by_index(fs.readMorphIndex())
+        else:
+            raise Exception(f'invalid display item type value: {self.disp_type}')
+        
+    def save(self, fs: FileWriteStream, model: Model):
+        fs.writeByte(self.disp_type)
+        if self.disp_type == 0:
+            fs.writeBoneIndex(model.bones.find(self.name))
+        elif self.disp_type == 1:
+            fs.writeMorphIndex(model.morphs.find(self.name))
+        else:
+            raise Exception(f'invalid display item type value: {self.disp_type}')
+
+
+class RigidBody:
     TYPE_SPHERE = 0
     TYPE_BOX = 1
     TYPE_CAPSULE = 2
@@ -1425,10 +1687,10 @@ class Rigid:
     MODE_DYNAMIC = 1
     MODE_DYNAMIC_BONE = 2
     def __init__(self):
-        self.name = ''
-        self.name_e = ''
+        self.name = ""
+        self.name_e = ""
 
-        self.bone = None
+        self.bone: str = ""  # Reference by name
         self.collision_group_number = 0
         self.collision_group_mask = 0
 
@@ -1452,15 +1714,11 @@ class Rigid:
             self.name_e,
             )
 
-    def load(self, fs):
+    def load(self, fs: FileReadStream, model: Model):
         self.name = fs.readStr()
         self.name_e = fs.readStr()
 
-        boneIndex = fs.readBoneIndex()
-        if boneIndex != -1:
-            self.bone = boneIndex
-        else:
-            self.bone = None
+        self.bone = model.bones.name_by_index(fs.readBoneIndex())
 
         self.collision_group_number = fs.readSignedByte()
         self.collision_group_mask = fs.readUnsignedShort()
@@ -1479,14 +1737,11 @@ class Rigid:
 
         self.mode = fs.readSignedByte()
 
-    def save(self, fs):
+    def save(self, fs: FileWriteStream, model: Model):
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
 
-        if self.bone is None:
-            fs.writeBoneIndex(-1)
-        else:
-            fs.writeBoneIndex(self.bone)
+        fs.writeBoneIndex(model.bones.find(self.bone))
 
         fs.writeSignedByte(self.collision_group_number)
         fs.writeUnsignedShort(self.collision_group_mask)
@@ -1513,8 +1768,8 @@ class Joint:
 
         self.mode = 0
 
-        self.src_rigid = None
-        self.dest_rigid = None
+        self.src_rigid: str = "" # Reference by name
+        self.dst_rigid: str = ""
 
         self.location = []
         self.rotation = []
@@ -1527,18 +1782,27 @@ class Joint:
         self.spring_constant = []
         self.spring_rotation_constant = []
 
-    def load(self, fs: FileReadStream):
+    def load(self, fs: FileReadStream, model: Model):
+        try: self._load(fs, model)
+        except struct.error: # possibly contains truncated data
+            if self.src_rigid is None or self.dst_rigid is None: raise
+            self.location = self.location or (0, 0, 0)
+            self.rotation = self.rotation or (0, 0, 0)
+            self.maximum_location = self.maximum_location or (0, 0, 0)
+            self.minimum_location = self.minimum_location or (0, 0, 0)
+            self.maximum_rotation = self.maximum_rotation or (0, 0, 0)
+            self.minimum_rotation = self.minimum_rotation or (0, 0, 0)
+            self.spring_constant = self.spring_constant or (0, 0, 0)
+            self.spring_rotation_constant = self.spring_rotation_constant or (0, 0, 0)
+
+    def _load(self, fs: FileReadStream, model: Model):
         self.name = fs.readStr()
         self.name_e = fs.readStr()
 
         self.mode = fs.readSignedByte()
 
-        self.src_rigid = fs.readRigidIndex()
-        self.dest_rigid = fs.readRigidIndex()
-        if self.src_rigid == -1:
-            self.src_rigid = None
-        if self.dest_rigid == -1:
-            self.dest_rigid = None
+        self.src_rigid = model.rigids.name_by_index(fs.readRigidIndex())
+        self.dst_rigid = model.rigids.name_by_index(fs.readRigidIndex())
 
         self.location = fs.readVector(3)
         self.rotation = fs.readVector(3)
@@ -1551,20 +1815,14 @@ class Joint:
         self.spring_constant = fs.readVector(3)
         self.spring_rotation_constant = fs.readVector(3)
 
-    def save(self, fs: FileWriteStream):
+    def save(self, fs: FileWriteStream, model: Model):
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
 
         fs.writeSignedByte(self.mode)
 
-        if self.src_rigid is not None:
-            fs.writeRigidIndex(self.src_rigid)
-        else:
-            fs.writeRigidIndex(-1)
-        if self.dest_rigid is not None:
-            fs.writeRigidIndex(self.dest_rigid)
-        else:
-            fs.writeRigidIndex(-1)
+        fs.writeRigidIndex(model.rigids.find(self.src_rigid))
+        fs.writeRigidIndex(model.rigids.find(self.dst_rigid))
 
         fs.writeVector(self.location)
         fs.writeVector(self.rotation)
@@ -1578,24 +1836,17 @@ class Joint:
         fs.writeVector(self.spring_rotation_constant)
 
 
-
-def load(path: str) -> Model:
+def load(path:str) -> Model:
     with FileReadStream(path) as fs:
-        #logging.info('****************************************')
-        #logging.info(' mmd_tools.pmx module')
-        #logging.info('----------------------------------------')
-        #logging.info(' Start to load model data form a pmx file')
-        #logging.info('            by the mmd_tools.pmx modlue.')
-        #logging.info('')
         header = Header()
         header.load(fs)
         fs.setHeader(header)
         model = Model()
-        model.load(fs)
-        #logging.info(' Finished loading.')
-        #logging.info('----------------------------------------')
-        #logging.info(' mmd_tools.pmx module')
-        #logging.info('****************************************')
+        try:
+            model.load(fs)
+        except struct.error as e:
+            raise ValueError(f"Corrupted file: {e}")
+
         return model
 
 def save(path: str, model: Model) -> None:
@@ -1604,5 +1855,3 @@ def save(path: str, model: Model) -> None:
         header.save(fs)
         fs.setHeader(header)
         model.save(fs)
-        #logging.info(' Finished saving.')
-        #logging.info('----------------------------------------')
