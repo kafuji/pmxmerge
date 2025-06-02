@@ -50,8 +50,8 @@ Note: You need pmxmerge.py and pmx.py in the same directory as pmxmerge_cui.py t
 | `--no_update`, `-u` | Comma-separated list of items to not update (any of `BONE MAT_SETTING MORPHS PHYSICS DISPLAY`) |
 | `--version`, `-v` | Show the version of PMXMerge and exit                   |
 
-- Bones will always be appended. 
-- Mesh data (Vertices, Faces, and Vertex/UV Morph) will always be appended and merged into existing materials and corresponding morphs.
+* Bones will always be appended.
+* Mesh data (Vertices, Faces, and Vertex/UV Morph) will always be appended and merged into existing materials and corresponding morphs.
 
 ## Notes
 
@@ -66,3 +66,19 @@ This tool is provided "as is" without any warranty of any kind, either expressed
 
 GPL-3.0-or-later
 © 2025 Kafuji Sato
+
+## Changelog
+
+* 2025/06/03: V1.1.1
+  * Fixed issue where textures were lost in output PMX file.
+  * Renamed `pmx.py` to `pypmx.py` to avoid confusion with the original PMX library.
+  * Added savetest.py for debugging purposes to load/save PMX files without errors.
+
+* 2025/06/02: V1.1.0
+  * Completely rewritten core logic to be more modular and maintainable.
+  * Added support for merging display groups.
+  * Options revamped to allow more control over what gets appended or updated.
+  * Fixed issue where material morphs were not handled correctly.
+
+* 2025/05/30: V1.0.0
+  * Initial release with basic merging functionality.

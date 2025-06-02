@@ -4,13 +4,12 @@
 
 # Modified by Kafuji Sato
 # Changes:
-# - Added NamedList class for named elements (Bone, Material, Morph, etc.)
+# - Added NamedList class for named elements (Bone, Material, Texture, Morph, DisplayGroup etc.)
 # - Reference to Vertices changed to vertex object references instead of indices.
-# - Reference to Bones, Materials, Morphs, DisplayItems, RigidBodies, and Joints changed to name instead of index (Blender's convention)
+# - Reference to Bones, Materials, Morphs, Textures, DisplayItems, RigidBodies, and Joints changed to name instead of index (Blender's convention)
 # - Material have corresponding faces instead of just vertex count.
 # - Changed load/save functions to reflect the new structure.
 # - Added type annotations for better clarity.
-
 from __future__ import annotations
 
 import logging
@@ -18,9 +17,11 @@ import struct
 from typing import (Dict, Generic, Iterable, List, Optional, Tuple, TypeVar,
                     Union, overload)
 
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
 
 ##################################################################################
-# Basic container for named elements with O(1) access by name.
+# Basic container classes
 T = TypeVar('T')
 class NamedElements(list[T], Generic[T]):
     """
@@ -117,12 +118,12 @@ class NamedElements(list[T], Generic[T]):
         self._rebuild_cache()
 
     def __contains__(self, key: Union[str, T]) -> bool:
-        if isinstance(key, str):
-            return key in self._name_cache
-        return super().__contains__(key)
+        if not isinstance(key, str):
+            key = key.name
+        return key in self._name_cache
 
     def get(self, name: str, default: Optional[T] = None) -> Optional[T]:
-        """Get an element by its name in O(1)."""
+        """Get an element by its name in O(1) with a default value."""
         entry = self._name_cache.get(name)
         return entry[1] if entry else default
 
@@ -132,10 +133,15 @@ class NamedElements(list[T], Generic[T]):
             return self[index].name
         return None
 
-    def find(self, name: str) -> int:
-        """Get the index of an element by its name in O(1). Returns -1 if not found."""
-        entry = self._name_cache.get(name)
-        return entry[0] if entry else -1
+    def index(self, key: Union[str, T]) -> int:
+        """Get the index of an element by its name in O(1). Returns -1 if not found. Key can be a name string or an element."""
+        if isinstance(key, str):
+            entry = self._name_cache.get(key)
+            return entry[0] if entry else -1
+        for i, item in enumerate(self):
+            if item == key:
+                return i
+        return -1
 
     def validate(self):
         seen_names = set()
@@ -146,6 +152,24 @@ class NamedElements(list[T], Generic[T]):
                 raise ValueError(f"Duplicate name '{item.name}' at index {i}.")
             seen_names.add(item.name)
 
+
+class TextureList(list):
+    """
+    A list of Texture objects with special handling.
+        - [out of range index] returns None instead of the last value.
+        - index(unknown value) returns -1, instead of raising ValueError.
+    Otherwise behaves like a normal list.
+    """
+    def __getitem__(self, index: int) -> Optional[Texture]:
+        if index < 0 or index >= len(self):
+            return None
+        return super().__getitem__(index)
+
+    def index(self, value: Texture) -> int:
+        try:
+            return super().index(value)
+        except ValueError:
+            return -1
 
 ##################################################################################
 class InvalidFileError(Exception):
@@ -459,7 +483,7 @@ class Model:
 
         self.vertices: List[Vertex] = []
         self.faces: List[Face] = []
-        self.textures: List[Texture] = []
+        self.textures: TextureList[Texture] = TextureList()
         self.materials: NamedElements[Material] = NamedElements[Material]()
         self.bones: NamedElements[Bone] = NamedElements[Bone]()
         self.morphs: NamedElements[Morph] = NamedElements[Morph]()
@@ -469,34 +493,18 @@ class Model:
         self.rigids: NamedElements[RigidBody] = NamedElements[RigidBody]()
         self.joints: NamedElements[Joint] = NamedElements[Joint]()
 
-        # Index maps for fast lookup, Should be initialized before use
-        self.vert_index_map: Dict[Vertex, int] = {}
-        self.tex_index_map: Dict[Texture, int] = {}
+        # Index maps for vertex->index fast lookup, Should be initialized before use
+        self.vert_index: Dict[Vertex, int] = {}
 
         # Additional UVs count
         self.additional_uvs: int = 0
 
-    ##################################################################################
-    # Index access functions (used by load() function of each class to deserialize data.
-    def tex_by_index(self, index:int) -> Texture: # Allow unset (-1) index. Out of range should raise IndexError.
-        return self.textures[index] if 0 <= index else None
-
     ################################################################################
     # Index Lookup functions (used by save() function of each class to serialize data.
-
-    def ensure_lookup_table(self):
-        """Ensure lookup tables for fast index access are initialized."""
+    def ensure_vertex_lookup_table(self):
+        """Ensure vertex lookup tables for fast index access are initialized."""
         # Use instance as reference for vertices and textures
-        self.vert_index_map = {vert: i for i, vert in enumerate(self.vertices)}
-        self.tex_index_map = {tex: i for i, tex in enumerate(self.textures)}
-
-    # Index lookup functions
-    def vert_index(self, v: Vertex) -> int: # raise KeyError if v is not in the model
-        return self.vert_index_map[v]
-
-    def tex_index(self, t: Texture) -> int: # Return -1 if texture is not found (unset)
-        return self.tex_index_map.get(t, -1)  
-
+        self.vert_index = {vert: i for i, vert in enumerate(self.vertices)}
 
     ################################################################################
     def load(self, fs: FileReadStream):
@@ -520,7 +528,7 @@ class Model:
         num_vertices = fs.readInt()
         for i in range(num_vertices):
             v = Vertex()
-            v.load(fs) # Vertex has reference to bones, but we don't pass self here because it will be set later
+            v.load(fs) # Vertex has reference to bones, but we don't pass self here because bones will be loaded later.
             self.vertices.append(v)
         logging.debug(f"Loaded {len(self.vertices)}")
 
@@ -539,11 +547,10 @@ class Model:
         # Load Textures
         num_textures = fs.readInt()
         for i in range(num_textures):
-            t = Texture()
-            t.load(fs) # Texture has no reference to Model elements, so we don't pass self
-            self.textures.append(t)
+            path = fs.readStr()
+            self.textures.append(Texture.from_path(path))
+            # logging.debug(f"Texture loaded: {path}, index {i}")
         logging.debug(f"Loaded {len(self.textures)} textures")
-
 
         ########################################
         # Load Materials
@@ -630,7 +637,7 @@ class Model:
 
         # Ensure lookup table for each list
         self.purge_deleted_vertices() # Remove deleted vertices before saving
-        self.ensure_lookup_table()
+        self.ensure_vertex_lookup_table()
 
         logging.debug("======== Saving Model ========")
 
@@ -661,8 +668,9 @@ class Model:
         ##########################################
         # Save Textures
         fs.writeInt(len(self.textures))
-        for i in self.textures:
-            i.save(fs) # Texture has no reference to Model elements, so we don't pass self
+        for t in self.textures:
+            fs.writeStr(t)  # Write the texture path as a string
+            # logging.debug(f"Texture saved: {t}, index {self.textures.index(t)}")
         logging.debug(f"Saved {len(self.textures)} textures")
 
         ##########################################
@@ -670,6 +678,7 @@ class Model:
         fs.writeInt(len(self.materials))
         for i in self.materials:
             i.save(fs, self)
+
         logging.debug(f"Saved {len(self.materials)} materials")
 
         ############################################
@@ -692,7 +701,6 @@ class Model:
         for i in self.displaygroup:
             i.save(fs, self)
         logging.debug(f"Saved {len(self.displaygroup)} display groups")
-
 
         ############################################
         # Save Rigid Bodies
@@ -810,19 +818,14 @@ class Model:
         self.purge_deleted_vertices()
         return
 
-    def ensure_texture(self, texture: Union[Texture, str]) -> Texture:
+    def ensure_texture(self, tex: Texture) -> Texture:
         """
         Ensure a texture with the given path exists in the model.
         Append a new Texture if not found, or return the existing one.
         """
-        if isinstance(texture, str):
-            texture = Texture(path=texture)
-
-        if texture in self.textures:
-            return texture
-
-        self.textures.append(texture)
-        return texture
+        if tex not in self.textures:
+            self.textures.append(tex)
+        return tex
 
     def purge_unused_textures(self) -> None:
         """
@@ -830,12 +833,14 @@ class Model:
         ensure_lookup_table() should be called after this to rebuild the index maps.
         """
         # Gather all textures used by the materials
-        tex_used: set[Texture] = set()
+        tex_used: set(str) = set()
         for mat in self.materials:
-            tex_used.add(mat.texture)
+            tex_used.add(mat.texture) if mat.texture else None
+            tex_used.add(mat.sphere_texture) if mat.sphere_texture else None
+            tex_used.add(mat.toon_texture) if mat.toon_texture else None
 
         # Build a new list of textures that are used
-        self.textures = [t for t in self.textures if t in tex_used]
+        self.textures = TextureList([Texture.from_path(t) for t in self.textures if t in tex_used])
         return
 
 
@@ -943,19 +948,19 @@ class BoneWeight:
     def save(self, fs: FileWriteStream, model: Model):
         fs.writeByte(self.type)
         if self.type == self.BDEF1:
-            fs.writeBoneIndex(model.bones.find(self.bones[0]))
+            fs.writeBoneIndex(model.bones.index(self.bones[0]))
         elif self.type == self.BDEF2:
             for i in range(2):
-                fs.writeBoneIndex(model.bones.find(self.bones[i]))
+                fs.writeBoneIndex(model.bones.index(self.bones[i]))
             fs.writeFloat(self.weights[0])
         elif self.type == self.BDEF4:
             for i in range(4):
-                fs.writeBoneIndex(model.bones.find(self.bones[i]))
+                fs.writeBoneIndex(model.bones.index(self.bones[i]))
             for i in range(4):
                 fs.writeFloat(self.weights[i])
         elif self.type == self.SDEF:
             for i in range(2):
-                fs.writeBoneIndex(model.bones.find(self.bones[i]))
+                fs.writeBoneIndex(model.bones.index(self.bones[i]))
             if not isinstance(self.weights, BoneWeightSDEF):
                 raise ValueError('weights should be BoneWeightSDEF for SDEF type')
             fs.writeFloat(self.weights.weight)
@@ -981,48 +986,35 @@ class Face:
         self.vertices[0] = model.vertices[fs.readVertexIndex()]
 
     def save(self, fs: FileWriteStream, model: Model):
-        fs.writeVertexIndex(model.vert_index(self.vertices[2]))
-        fs.writeVertexIndex(model.vert_index(self.vertices[1]))
-        fs.writeVertexIndex(model.vert_index(self.vertices[0]))
+        fs.writeVertexIndex(model.vert_index[self.vertices[2]])
+        fs.writeVertexIndex(model.vert_index[self.vertices[1]])
+        fs.writeVertexIndex(model.vert_index[self.vertices[0]])
 
-
-class Texture:
+import os
+class Texture(str):
     """
-    Stores tex path string as absolute path.
-    Instances with same path will be considered equal.
+    Texture class to represent a texture file path.
+    This class is a simple wrapper around a string to represent texture paths.
+    Automatically converts paths to relative Windows-style paths in same manner.
     """
-    # def __convert_to_abs(self, path: str) -> str:
-    #     if not os.path.isabs(path):
-    #         return os.path.normpath(os.path.join(os.getcwd(), path.replace('\\', os.path.sep)))
-    #     return path
+    def sanitize(self):
+        if not os.path.isabs(self):
+            self = os.path.normpath(os.path.join(os.getcwd(), self)) # to absolute path
+        self = os.path.relpath(self, start=os.getcwd()).replace(os.path.sep, '\\') # to relative path with windows style
+        return self
 
-    # def __convert_to_rel(self, abs_path: str, base_path: str) -> str:
-    #     try:
-    #         return os.path.relpath(abs_path, start=os.path.dirname(base_path)).replace(os.path.sep, '\\')
-    #     except ValueError:
-    #         return abs_path
+    @classmethod
+    def from_path(cls, path: str) -> 'Texture':
+        if not isinstance(path, str):
+            raise ValueError("Texture path must be a string.")
+        return cls(path)
 
-    def __init__(self, path: str = "") -> None:
-        self.path: str = path
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Texture):
-            return False
-        return self.path == other.path
-
-    def __hash__(self) -> int:
-        return hash(self.path)
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(path={self.path!r})"
-    
     def load(self, fs: FileReadStream):
-        self.path = fs.readStr()
-        # self.path = self.__convert_to_abs(self.path)  # Ensure path is absolute
+        path = fs.readStr()
+        self = Texture.from_path(path)
 
     def save(self, fs: FileWriteStream):
-        # relPath = self.__convert_to_rel(self.path, fs.path())
-        fs.writeStr(self.path)
+        fs.writeStr(self)
 
 
 class Material:
@@ -1032,8 +1024,8 @@ class Material:
     SPHERE_MODE_SUBTEX = 3
 
     def __init__(self):
-        self.name = ''
-        self.name_e = ''
+        self.name = ""
+        self.name_e = ""
 
         self.diffuse = []
         self.specular = []
@@ -1049,11 +1041,12 @@ class Material:
         self.edge_color = []
         self.edge_size = 1
 
-        self.texture: Texture = None
-        self.sphere_texture: Texture = None
+        self.texture: Optional[Texture] = None
+        self.sphere_texture: Optional[Texture] = None
         self.sphere_texture_mode = 0
         self.is_shared_toon_texture = True
-        self.toon_texture: Union[int, Texture] = -1  # Shared toon texture index or Texture object, Default is -1 (shared toon texture but it is not set)
+        self.shared_toon_texture_idx: int = 0
+        self.toon_texture: Optional[Texture] = None
 
         self.comment = ''
 
@@ -1063,24 +1056,18 @@ class Material:
 
 
     def __repr__(self):
-        return '<Material name %s, name_e %s, diffuse %s, specular %s, shininess %s, ambient %s, double_side %s, drop_shadow %s, self_shadow_map %s, self_shadow %s, toon_edge %s, edge_color %s, edge_size %s, toon_texture %s, comment %s>'%(
+        return '<Material name %s, name_e %s, diffuse %s, specular %s, shininess %.2f, ambient %s, texture %s, sphere_texture %s, toon_texture %s, comment %s>'%(
             self.name,
             self.name_e,
             str(self.diffuse),
             str(self.specular),
-            str(self.shininess),
+            self.shininess,
             str(self.ambient),
-            str(self.is_double_sided),
-            str(self.enabled_drop_shadow),
-            str(self.enabled_self_shadow_map),
-            str(self.enabled_self_shadow),
-            str(self.enabled_toon_edge),
-            str(self.edge_color),
-            str(self.edge_size),
             str(self.texture),
             str(self.sphere_texture),
             str(self.toon_texture),
-            str(self.comment),)
+            str(self.comment),
+        )
 
 
     def load(self, fs: FileReadStream, model: Model):
@@ -1102,15 +1089,15 @@ class Material:
         self.edge_color = fs.readVector(4)
         self.edge_size = fs.readFloat()
 
-        self.texture = model.tex_by_index(fs.readTextureIndex())
-        self.sphere_texture = model.tex_by_index(fs.readTextureIndex())
+        self.texture = model.textures[fs.readTextureIndex()]
+        self.sphere_texture = model.textures[fs.readTextureIndex()]
         self.sphere_texture_mode = fs.readSignedByte()
 
         self.is_shared_toon_texture = (fs.readSignedByte() == 1)
         if self.is_shared_toon_texture:
-            self.toon_texture = fs.readSignedByte()
+            self.shared_toon_texture_idx = fs.readSignedByte()
         else:
-            self.toon_texture = model.tex_by_index(fs.readTextureIndex())
+            self.toon_texture = model.textures[fs.readTextureIndex()]
 
         self.comment = fs.readStr()
         self.vertex_count = fs.readInt()
@@ -1135,16 +1122,16 @@ class Material:
         fs.writeVector(self.edge_color)
         fs.writeFloat(self.edge_size)
 
-        fs.writeTextureIndex(model.tex_index(self.texture))
-        fs.writeTextureIndex(model.tex_index(self.sphere_texture))
+        fs.writeTextureIndex(model.textures.index(self.texture))
+        fs.writeTextureIndex(model.textures.index(self.sphere_texture))
         fs.writeSignedByte(self.sphere_texture_mode)
 
         if self.is_shared_toon_texture:
             fs.writeSignedByte(1)
-            fs.writeSignedByte(self.toon_texture) # This is the index of shared toon texture, -1 means not set.
+            fs.writeSignedByte(self.shared_toon_texture_idx)
         else:
             fs.writeSignedByte(0)
-            fs.writeTextureIndex(model.tex_index(self.toon_texture))
+            fs.writeTextureIndex(model.textures.index(self.toon_texture))
 
         fs.writeStr(self.comment)
         fs.writeInt(len(self.faces) * 3)  # Number of vertices in faces, each face has 3 vertices
@@ -1286,12 +1273,11 @@ class Bone:
 
 
     def save(self, fs: FileWriteStream, model: Model):
-
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
 
         fs.writeVector(self.location)
-        fs.writeBoneIndex(model.bones.find(self.parent))
+        fs.writeBoneIndex(model.bones.index(self.parent))
         fs.writeInt(self.transform_order)
 
         flags = 0
@@ -1313,12 +1299,12 @@ class Bone:
         fs.writeShort(flags)
 
         if flags & 0x0001:
-            fs.writeBoneIndex(model.bones.find(self.displayConnectionBone))
+            fs.writeBoneIndex(model.bones.index(self.displayConnectionBone))
         else:
             fs.writeVector(self.displayConnectionVector)
 
         if self.hasAdditionalRotate or self.hasAdditionalLocation:
-            fs.writeBoneIndex(model.bones.find(self.additionalTransformBone))
+            fs.writeBoneIndex(model.bones.index(self.additionalTransformBone))
             fs.writeFloat(self.additionalTransformInfluence)
 
         if flags & 0x0400:
@@ -1332,13 +1318,14 @@ class Bone:
             fs.writeInt(self.externalTransKey)
 
         if self.isIK:
-            fs.writeBoneIndex(model.bones.find(self.ik_target))
+            fs.writeBoneIndex(model.bones.index(self.ik_target))
             fs.writeInt(self.loopCount)
             fs.writeFloat(self.rotationConstraint)
 
             fs.writeInt(len(self.ik_links))
             for i in self.ik_links:
                 i.save(fs, model)
+
 
 class IKLink:
     def __init__(self):
@@ -1365,7 +1352,7 @@ class IKLink:
         del self.target_index
 
     def save(self, fs: FileWriteStream, model: Model):
-        fs.writeBoneIndex(model.bones.find(self.target))
+        fs.writeBoneIndex(model.bones.index(self.target))
         if isinstance(self.minimumAngle, (tuple, list)) and isinstance(self.maximumAngle, (tuple, list)):
             fs.writeByte(1)
             fs.writeVector(self.minimumAngle)
@@ -1451,7 +1438,7 @@ class VertexMorphOffset:
         self.offset = fs.readVector(3)
 
     def save(self, fs: FileWriteStream, model: Model):
-        fs.writeVertexIndex(model.vert_index(self.vertex))
+        fs.writeVertexIndex(model.vert_index[self.vertex])
         fs.writeVector(self.offset)
 
 class UVMorph(Morph):
@@ -1481,7 +1468,7 @@ class UVMorphOffset:
         self.offset = fs.readVector(4)
 
     def save(self, fs: FileWriteStream, model: Model):
-        fs.writeVertexIndex(model.vert_index(self.vertex))
+        fs.writeVertexIndex(model.vert_index[self.vertex])
         fs.writeVector(self.offset)
 
 class BoneMorph(Morph):
@@ -1522,7 +1509,7 @@ class BoneMorphOffset:
             self.rotation_offset = (0, 0, 0, 1)
 
     def save(self, fs: FileWriteStream, model: Model):
-        fs.writeBoneIndex(model.bones.find(self.bone))
+        fs.writeBoneIndex(model.bones.index(self.bone))
         fs.writeVector(self.location_offset)
         fs.writeVector(self.rotation_offset)
 
@@ -1573,7 +1560,7 @@ class MaterialMorphOffset:
         self.toon_texture_factor = fs.readVector(4)
 
     def save(self, fs: FileWriteStream, model: Model):
-        fs.writeMaterialIndex(model.materials.find(self.material))
+        fs.writeMaterialIndex(model.materials.index(self.material))
         fs.writeSignedByte(self.offset_type)
         fs.writeVector(self.diffuse_offset)
         fs.writeVector(self.specular_offset)
@@ -1610,7 +1597,7 @@ class GroupMorphOffset:
         self.factor = fs.readFloat()
 
     def save(self, fs: FileWriteStream, model: Model):
-        fs.writeMorphIndex(model.morphs.find(self.morph))
+        fs.writeMorphIndex(model.morphs.index(self.morph))
         fs.writeFloat(self.factor)
 
 
@@ -1671,9 +1658,9 @@ class DisplayItem:
     def save(self, fs: FileWriteStream, model: Model):
         fs.writeByte(self.disp_type)
         if self.disp_type == 0:
-            fs.writeBoneIndex(model.bones.find(self.name))
+            fs.writeBoneIndex(model.bones.index(self.name))
         elif self.disp_type == 1:
-            fs.writeMorphIndex(model.morphs.find(self.name))
+            fs.writeMorphIndex(model.morphs.index(self.name))
         else:
             raise Exception(f'invalid display item type value: {self.disp_type}')
 
@@ -1741,7 +1728,7 @@ class RigidBody:
         fs.writeStr(self.name)
         fs.writeStr(self.name_e)
 
-        fs.writeBoneIndex(model.bones.find(self.bone))
+        fs.writeBoneIndex(model.bones.index(self.bone))
 
         fs.writeSignedByte(self.collision_group_number)
         fs.writeUnsignedShort(self.collision_group_mask)
@@ -1821,8 +1808,8 @@ class Joint:
 
         fs.writeSignedByte(self.mode)
 
-        fs.writeRigidIndex(model.rigids.find(self.src_rigid))
-        fs.writeRigidIndex(model.rigids.find(self.dst_rigid))
+        fs.writeRigidIndex(model.rigids.index(self.src_rigid))
+        fs.writeRigidIndex(model.rigids.index(self.dst_rigid))
 
         fs.writeVector(self.location)
         fs.writeVector(self.rotation)

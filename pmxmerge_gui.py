@@ -4,7 +4,7 @@ from tkinter import filedialog, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import json
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 SETTINGS_FILE = "pmxmerge_settings.json"
 
 def save_settings(settings: dict):

@@ -6,6 +6,7 @@ __pycache__/
 # Test forlder and files
 test/
 *.pmx
+*.png
 pmxmerge_settings.json
 
 # C extensions
