@@ -23,10 +23,17 @@ You can also use it to make an chimera model by merging multiple PMX files toget
 
 Run pmxmerge_gui.exe or `python pmxmerge_gui.py` to launch the graphical user interface (GUI) for PMXMerge.
 
-To specify the base and patch PMX files, just drag and drop the files into the GUI or use the file selection dialog to choose the files.
-You can choose which features to append or replace by check boxes in the GUI.
+1. Specify the base and patch PMX files by drag&drop or using the file selection dialog.
+2. Optionally, specify the output PMX file path (default is `result.pmx` in the same directory as the base PMX file).
+3. Select which items to append or update:
+   * **Append**: Choose features to append from the patch PMX file.
+   * **Update/Replace**: Choose features to update in the base PMX file with those from the patch PMX file.
+4. Click the "Merge PMX" button to perform the merge operation.
 
-Then click the "Merge" button to perform the merge operation. See the console output for any errors or warnings during the merge process.
+* Bones will always be appended.
+* Mesh data (Vertices, Faces) will always be appended and merged into existing materials.
+* Vertex/UV Morphs will always be appended(new ones)/merged(existing ones).
+  * If existing morph with different type is found, it will be replaced with the patch's morph.
 
 ### Python version
 
@@ -50,10 +57,7 @@ Note: You need all .py files come with this distribution in the same directory a
 | `--no_update`, `-u` | Comma-separated list of items to not update (any of `BONE_LOC BONE_SETTING MAT_SETTING MORPHS PHYSICS DISPLAY`) |
 | `--version`, `-v` | Show the version of PMXMerge and exit                   |
 
-* Bones will always be appended.
-* Mesh data (Vertices, Faces) will always be appended and merged into existing materials.
-* Vertex/UV Morphs will always be appended(new ones)/merged(existing ones).
-  * If existing morph with different type is found, it will be replaced with the patch's morph.
+* All features will be appended/updated by default.
 
 ## Notes
 
