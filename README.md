@@ -31,7 +31,7 @@ Run pmxmerge_gui.exe or `python pmxmerge_gui.py` to launch the graphical user in
 4. Click the "Merge PMX" button to perform the merge operation.
 
 * New Bones and Materials will always be appended.
-* Mesh data (Vertices, Faces) will always be appended and merged into existing materials.
+* Existing mesh data (Vertices, Faces) will always be replaced with the patch's mesh data.
 * Vertex/UV Morphs will always be appended(new ones)/merged(existing ones).
   * If existing morph with different type is found, it will be replaced with the patch's morph.
 
