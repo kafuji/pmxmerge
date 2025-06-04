@@ -36,7 +36,7 @@ Example command to merge a base PMX file with a patch PMX file and output the re
 python pmxmerge_cui.py --base base.pmx --patch patch.pmx --no_append DISPLAY --no_update BONE_SETTING MORPHS DISPLAY
 ```
 
-Note: You need pmxmerge.py and pmx.py in the same directory as pmxmerge_cui.py to run this script.
+Note: You need all .py files come with this distribution in the same directory as pmxmerge_cui.py to run this script.
 
 ### Arguments
 
