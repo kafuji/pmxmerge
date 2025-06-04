@@ -33,7 +33,7 @@ Then click the "Merge" button to perform the merge operation. See the console ou
 Example command to merge a base PMX file with a patch PMX file and output the result to a new PMX file:
 
 ```bash
-python pmxmerge_cui.py --base base.pmx --patch patch.pmx --out result.pmx --no_append DISPLAY --no_update MORPHS DISPLAY
+python pmxmerge_cui.py --base base.pmx --patch patch.pmx --no_append DISPLAY --no_update BONE_SETTING MORPHS DISPLAY
 ```
 
 Note: You need pmxmerge.py and pmx.py in the same directory as pmxmerge_cui.py to run this script.
@@ -47,15 +47,18 @@ Note: You need pmxmerge.py and pmx.py in the same directory as pmxmerge_cui.py t
 | `--patch`, `-p`   | Path to the patch PMX file (required)                   |
 | `--out`, `-o`     | Output PMX file path (Default: result.pmx). Relative to the base PMX file's directory. |
 | `--no_append`, `-a` | Comma-separated list of items to not append (any of `MORPHS PHYSICS DISPLAY`) |
-| `--no_update`, `-u` | Comma-separated list of items to not update (any of `BONE MAT_SETTING MORPHS PHYSICS DISPLAY`) |
+| `--no_update`, `-u` | Comma-separated list of items to not update (any of `BONE_LOC BONE_SETTING MAT_SETTING MORPHS PHYSICS DISPLAY`) |
 | `--version`, `-v` | Show the version of PMXMerge and exit                   |
 
 * Bones will always be appended.
-* Mesh data (Vertices, Faces, and Vertex/UV Morph) will always be appended and merged into existing materials and corresponding morphs.
+* Mesh data (Vertices, Faces) will always be appended and merged into existing materials.
+* Vertex/UV Morphs will always be appended(new ones)/merged(existing ones).
+  * If existing morph with different type is found, it will be replaced with the patch's morph.
 
 ## Notes
 
-* Duplicate/Empty element names (bones, materials, morphs, rigid bodies and joints) in the both base and patch models are **not allowed**. Please fix them before merging.
+* Duplicate/Empty element names (bones, materials, morphs, rigid bodies and joints) in each of base and patch models are **not allowed**. Please fix them before merging.
+* Orphan vertices (vertices not referenced by any face) will be removed from the output PMX file.
 * Only supports PMX version 2.0.
 
 ## Disclaimer
@@ -69,10 +72,21 @@ GPL-3.0-or-later
 
 ## Changelog
 
+* 2025/06/04: V1.1.2
+  * Fixed: Bone/Vertex/UV morph was broken if the patch model has different type, same name morph with the base model.
+    * In this case, the script will now replace the morph instead of merging it.
+  * Slightly changed handling of textures in pypmx.py for more convenient usage.
+  * Changed Bone update options: Removed BONE, added following:
+    * BONE_LOC (Location and Display)
+    * BONE_SETTING (Parent, Transform Order, Add Transform, IK, etc).
+  * Changed executable build tool from Pyinstaller to Nuitka.
+  * Added build.ps1 for building the executable with Nuitka.
+
 * 2025/06/03: V1.1.1
   * Fixed issue where textures were lost in output PMX file.
   * Renamed `pmx.py` to `pypmx.py` to avoid confusion with the original PMX library.
   * Added savetest.py for debugging purposes to load/save PMX files without errors.
+  * Stable release with no known issues.
 
 * 2025/06/02: V1.1.0
   * Completely rewritten core logic to be more modular and maintainable.

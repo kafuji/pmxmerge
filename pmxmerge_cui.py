@@ -1,14 +1,14 @@
 import argparse
-from typing import Dict, Tuple
+from typing import Dict, Set
 
 import pmxmerge
 
 VERSION = "1.1.0"  # Version of the PMX Merge Tool
 
 # Default options for merging PMX models
-options_default: Dict[str, Tuple[str, ...]] = {
-    "append": ('MORPH', 'PHYSICS', 'DISPLAY' ), # Specify which features in the patch model to append to the base model. Bones and materials are always appended.
-    "update": ('BONE', 'MAT_SETTING', 'MORPH', 'PHYSICS', 'DISPLAY'), # Specify which features in the base model to update with the patch model
+options_default: Dict[str, Set[str]] = {
+    "append": {'MORPH', 'PHYSICS', 'DISPLAY'},  # Specify which features in the patch model to append to the base model. Bones and materials are always appended.
+    "update": {'BONE_LOC', 'BONE_SETTING', 'MAT_SETTING', 'MORPH', 'PHYSICS', 'DISPLAY'},  # Specify which features in the base model to update with the patch model
 }
 
 if __name__ == "__main__":
@@ -62,10 +62,10 @@ if __name__ == "__main__":
     # Build options for merging, the function expects positive lists, so we need to invert the logic
     append = options_default["append"]
     if args.no_append:
-        append = [feature for feature in options_default["append"] if feature not in args.no_append]
+        append = set(feature for feature in options_default["append"] if feature not in args.no_append)
     update = options_default["update"]
     if args.no_update:
-        update = [feature for feature in options_default["update"] if feature not in args.no_update]
+        update = set(feature for feature in options_default["update"] if feature not in args.no_update)
 
     # if both append and update are empty, exit
     if not append and not update:

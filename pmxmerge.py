@@ -1,6 +1,6 @@
 """
-pmxmerge.py - A script to merge PMX models by patching bones, materials and morphs.
-Version 1.1.1
+pmxmerge.py - A script to merge PMX models by patching bones, materials, etc.
+Version 1.1.2
 
 This script merges two PMX models: a base model and a patch model.
 
@@ -38,13 +38,13 @@ LICENCE: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.en.html)
 """
 
 import os
-from typing import Dict, Tuple
+from typing import Dict, Set, Tuple
 
 import pypmx
 
 import logging
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(filename)s : %(levelname)s - %(message)s')
 
 def validate_elements(model: pypmx.Model) -> bool:
     """Check for duplicate elements. Also check unnamed elements. Returns True if either duplicates or unnamed elements are found."""
@@ -70,14 +70,14 @@ def validate_elements(model: pypmx.Model) -> bool:
     ret |= check(model.bones)
     ret |= check(model.materials)
     ret |= check(model.morphs)
-    ret |= check(model.displaygroup)
+    ret |= check(model.display_slots)
     ret |= check(model.rigids)
     ret |= check(model.joints)
 
     return ret
 
 
-def append_update_bones(base: pypmx.Model, patch: pypmx.Model, append: Dict, update: Dict) -> None:
+def append_update_bones(base: pypmx.Model, patch: pypmx.Model, append: Set, update: Set) -> None:
     """Append new bones from patch to base model, update existing bones if specified."""
 
     # Append New Bones (Always)
@@ -88,40 +88,67 @@ def append_update_bones(base: pypmx.Model, patch: pypmx.Model, append: Dict, upd
     logging.info(f"🦴 Base model now has {len(base.bones)} bones after appending.")
 
     # Update Existing Bone settings
-    if 'BONE' in update:
-        logging.info("🦴 Updating bone settings...")
+    if any(b in update for b in ['BONE_LOC', 'BONE_SETTING']):
+        logging.info("🦴 Updating existing bone settings...")
         for bone in (b for b in patch.bones if b.name in base.bones):
-            index = base.bones.index(bone.name)
-            base.bones[index] = bone
-            logging.debug(f"🦴 Updated: '{bone.name}' (index: {index})")
+            b:pypmx.Bone = base.bones[bone.name]
+            b.name_e = bone.name_e
+
+            if 'BONE_LOC' in update:
+                b.location = bone.location
+                b.disp_connection_type = bone.disp_connection_type
+                b.disp_connection_bone = bone.disp_connection_bone
+                b.disp_connection_vector = bone.disp_connection_vector
+            if 'BONE_SETTING' in update:
+                b.parent = bone.parent
+                b.trans_order = bone.trans_order
+                b.trans_after_physics = bone.trans_after_physics
+
+                b.is_rotatable = bone.is_rotatable
+                b.is_movable = bone.is_movable
+                b.is_visible = bone.is_visible
+                b.is_controllable = bone.is_controllable
+
+                b.has_add_rot = bone.has_add_rot
+                b.has_add_loc = bone.has_add_loc
+                b.add_trans_bone = bone.add_trans_bone
+                b.add_trans_value = bone.add_trans_value
+
+                b.fixed_axis = bone.fixed_axis
+                b.local_coord = bone.local_coord
+
+                b.is_ik = bone.is_ik
+                b.ik_target = bone.ik_target
+                b.loop_count = bone.loop_count
+                b.rotation_unit = bone.rotation_unit
+                b.ik_links = bone.ik_links
+            logging.debug(f"🦴 Updated: '{b.name}' (index: {base.bones.index(b)})")
 
     logging.info("✔️ Finished Merging Bones.")
     return
 
 
-def append_update_material(base: pypmx.Model, patch: pypmx.Model, append: Dict, update: Dict) -> None:
+def append_update_material(base: pypmx.Model, patch: pypmx.Model, append: Set, update: Set) -> None:
     """Append new materials and their mesh data from patch to base model, update existing material settings if specified."""
 
     # Append New Materials (Always)
     base.append_vertices(patch.vertices) # All vertices from patch, prun when saving
     logging.info(f"🧵 Base model now has {len(base.vertices)} vertices after appending.")
 
-    for material in patch.materials:
-        if material.name not in base.materials: # Append New
-            base.materials.append(material)
-            logging.debug(f"🧵 Added: '{material.name}' (index: {len(base.materials) - 1})")
+    for mat in patch.materials:
+        if mat.name not in base.materials: # Append New
+            base.materials.append(mat)
+            logging.debug(f"🧵 Added: '{mat.name}' (index: {len(base.materials) - 1})")
 
         else: # Existing, Update faces
-            base_mat = base.materials.get(material.name)
-            base_mat.faces = material.faces
-            logging.debug(f"🧵 Updated faces for: '{material.name}' (index: {base.materials.index(base_mat)})")
+            base.replace_material_faces(base.materials[mat.name], mat.faces)
+            logging.debug(f"🧵 Updated faces for: '{mat.name}' (index: {base.materials.index(base.materials[mat.name])})")
 
     # Append/Merge textures
     logging.info("🖼️ Appending new textures from patch...")
     for tex in patch.textures:
         logging.debug(f"🖼️ Processing Texture: '{tex}'")
         base.ensure_texture(tex)  # Ensure texture is in the base model
-    base.purge_unused_textures()  # Clean up unused textures after merging
     logging.info(f"🖼️ Base model now has {len(base.textures)} textures after appending.")
 
     # Append/Merge Vertex/UV Morphs here (because they are part of mesh data)
@@ -132,6 +159,10 @@ def append_update_material(base: pypmx.Model, patch: pypmx.Model, append: Dict, 
             logging.debug(f"🧬 Added Morph: '{morph.name}' (index: {len(base.morphs) - 1})")
         else:
             base_morph = base.morphs.get(morph.name)
+            if type(base_morph) is not type(morph):
+                logging.warning(f"🧬 Morph type mismatch: '{morph.name}' (base: {base_morph.type_name()}, patch: {morph.type_name()}), replacing instead of merging.")
+                base.morphs[morph.name] = morph  # Replace with patch morph
+                continue
             base_morph.offsets.extend(morph.offsets)
             logging.debug(f"🧬 Updated: '{morph.name}' (index: {base.morphs.index(base_morph)})")
 
@@ -139,17 +170,20 @@ def append_update_material(base: pypmx.Model, patch: pypmx.Model, append: Dict, 
 
     if 'MAT_SETTING' in update:
         logging.info("🧵 Updating material settings...")
-        for material in (m for m in patch.materials if m.name in base.materials):
-            index = base.materials.index(material.name)
-            base.materials[index] = material
-            logging.debug(f"🧵 Replaced: '{material.name}' (index: {index})")
+        for mat in (m for m in patch.materials if m.name in base.materials):
+            index = base.materials.index(mat.name)
+            base.materials[index] = mat
+            logging.debug(f"🧵 Replaced: '{mat.name}' (index: {index})")
 
     logging.info("✔️ Finished Merging Materials.")
     return
 
 
-def append_update_morphs(base: pypmx.Model, patch: pypmx.Model, append: Dict, update: Dict) -> None:
+def append_update_morphs(base: pypmx.Model, patch: pypmx.Model, append: Set, update: Set) -> None:
     """Append new morphs from patch to base model, update existing morph settings if specified."""
+    if 'MORPH' not in append and 'MORPH' not in update:
+        logging.info("No Morphs to append or update. Skipping...")
+        return
 
     # Handle Material Morphs, Bone Morphs, and Group Morphs (Vertex and UV Morphs are handled at append_update_material)
     if 'MORPH' in append:
@@ -167,16 +201,18 @@ def append_update_morphs(base: pypmx.Model, patch: pypmx.Model, append: Dict, up
             if isinstance(morph, (pypmx.VertexMorph, pypmx.UVMorph)):
                 continue # Already handled in append_update_material
 
-            index = base.morphs.index(morph.name)
-            base.morphs[index] = morph  # Replace existing morph with the patch morph
-            logging.debug(f"🧬 Updated: '{morph.name}' (index: {index})")
+            base.morphs[morph.name] = morph  # Replace with patch morph
+            logging.debug(f"🧬 Updated: '{morph.name}' (index: {base.morphs.index(morph.name)})")
 
     logging.info("✔️ Finished Merging Morphs.")
     return
 
 
-def append_update_physics(base: pypmx.Model, patch: pypmx.Model, append: Dict, update: Dict) -> None:
+def append_update_physics(base: pypmx.Model, patch: pypmx.Model, append: Set, update: Set) -> None:
     """Append new rigid bodies and joints from patch to base model, update existing settings if specified."""
+    if 'PHYSICS' not in append and 'PHYSICS' not in update:
+        logging.info("No Physics to append or update. Skipping...")
+        return
 
     # Append
     if 'PHYSICS' in append:
@@ -209,40 +245,43 @@ def append_update_physics(base: pypmx.Model, patch: pypmx.Model, append: Dict, u
     logging.info("✔️ Finished Merging Physics.")
     return
 
-def append_update_displayitems(base: pypmx.Model, patch: pypmx.Model, append: Dict, update: Dict) -> None:
+def append_update_displayitems(base: pypmx.Model, patch: pypmx.Model, append: Set, update: Set) -> None:
     """Append new display groups and their entries from patch to base model, update existing display groups if specified."""
+    if 'DISPLAY' not in append and 'DISPLAY' not in update:
+        logging.info("No Display Slots to append or update. Skipping...")
+        return
 
     if 'DISPLAY' in append:
-        logging.info("📺 Appending new Display Groups from patch...")
-        for item in (d for d in patch.displaygroup if d.name not in base.displaygroup):
-            base.displaygroup.append(item)
-            logging.debug(f"📺 Added Display Group: '{item.name}' (index: {len(base.displaygroup) - 1})")
+        logging.info("📺 Appending new Display Slots from patch...")
+        for item in (d for d in patch.display_slots if d.name not in base.display_slots):
+            base.display_slots.append(item)
+            logging.debug(f"📺 Added Display Slot: '{item.name}' (index: {len(base.display_slots) - 1})")
 
-        # Append each display group entry from patch to base
-        logging.info(f"📺 Appending new Display Group entries...")
-        for item in (d for d in patch.displaygroup if d.name in base.displaygroup):
-            base_item = base.displaygroup.get(item.name)
+        # Append each display slot entry from patch to base
+        logging.info(f"📺 Appending new Display Slot entries...")
+        for item in (d for d in patch.display_slots if d.name in base.display_slots):
+            base_item = base.display_slots.get(item.name)
             for ent in item.items:
                 if ent not in base_item.items:
                     base_item.items.append(ent)
-                    logging.debug(f"📺 Appended Display Group Entry: '{ent}' to '{item.name}' (index: {base.displaygroup.index(base_item)})")
+                    logging.debug(f"📺 Appended Display Slot Entry: '{ent}' to '{item.name}' (index: {base.display_slots.index(base_item)})")
 
-            logging.debug(f"📺 Updated: '{item.name}' (index: {base.displaygroup.index(base_item)})")
+            logging.debug(f"📺 Updated: '{item.name}' (index: {base.display_slots.index(base_item)})")
 
-        logging.info(f"📺 Base model now has {len(base.displaygroup)} Display Groups after appending.")
+        logging.info(f"📺 Base model now has {len(base.display_slots)} Display Slots after appending.")
 
     if 'DISPLAY' in update:
-        logging.info("📺 Replacing existing Display Groups...")
-        for item in (d for d in patch.displaygroup if d.name in base.displaygroup):
-            index = base.displaygroup.index(item.name)
-            base.displaygroup[index] = item
+        logging.info("📺 Replacing existing Display Slots...")
+        for item in (d for d in patch.display_slots if d.name in base.display_slots):
+            index = base.display_slots.index(item.name)
+            base.display_slots[index] = item
             logging.debug(f"📺 Replaced Display Group: '{item.name}' (index: {index})")
 
     return
 
 
 # Process pmx.Model objects by merging patch into base
-def merge_models(base: pypmx.Model, patch: pypmx.Model, append: Dict, update: Dict) -> None:
+def merge_models(base: pypmx.Model, patch: pypmx.Model, append: Set, update: Set) -> None:
     """Merge patch model into base model, appending and updating specified features."""
     logging.info("🔄 Merging Models...")
     append_update_bones(base, patch, append, update)
@@ -250,7 +289,6 @@ def merge_models(base: pypmx.Model, patch: pypmx.Model, append: Dict, update: Di
     append_update_morphs(base, patch, append, update)
     append_update_physics(base, patch, append, update)
     append_update_displayitems(base, patch, append, update)
-    base.purge_unused_vertices()  # Clean up unused vertices after merging
     logging.info("✔️ Finished Merging Models.")
     return
 
@@ -281,20 +319,20 @@ def load_pmx_file(path: str) -> pypmx.Model:
         print(f"Error loading PMX model from '{path}': {e}")
 
 
-def save_pmx_file(model: pypmx.Model, path: str) -> bool:
+def save_pmx_file(model: pypmx.Model, path: str) -> Tuple[bool, str]:
     """Save a PMX model to the specified path."""
     try:
         pypmx.save(path, model)
     except Exception as e:
         logging.error(f"Error saving PMX model to '{path}': {e}")
         raise
-    return True
+    return True, "Model saved successfully."
 
 
 # Default options for merging PMX models
-options_default: Dict[str, Tuple[str, ...]] = {
-    "append": ('MORPH', 'PHYSICS', 'DISPLAY' ), # Specify which features in the patch model to append to the base model. Bones and materials are always appended.
-    "update": ('BONE', 'MAT_SETTING', 'MORPH', 'PHYSICS', 'DISPLAY'), # Specify which features in the base model to update with the patch model
+options_default: Dict[str, Set[str]] = {
+    "append": {'MORPH', 'PHYSICS', 'DISPLAY'},  # Specify which features in the patch model to append to the base model. Bones and materials are always appended.
+    "update": {'BONE_LOC', 'BONE_SETTING', 'MAT_SETTING', 'MORPH', 'PHYSICS', 'DISPLAY'},  # Specify which features in the base model to update with the patch model
 }
 
 # Main function to load, merge, and save PMX model files
@@ -302,9 +340,13 @@ def merge_pmx_files(
             path_base:str, 
             path_patch:str, 
             path_out:str, 
-            append: Dict = options_default['append'],
-            update: Dict = options_default['update'],
+            append: Set = options_default['append'],
+            update: Set = options_default['update'],
         ) -> Tuple[bool, str]:
+    """Merge two PMX models: a base model and a patch model. Returns a tuple of success status and message."""
+    logging.info(f"▶️ Starting merge: {path_base} + {path_patch} -> {path_out}")
+    logging.info(f"🔧 Options: Append: {append}, Update: {update}")
+
 
     if not path_base or not path_patch or not path_out:
         return False, "Base, patch and output paths must be specified."
@@ -343,9 +385,9 @@ def merge_pmx_files(
     merge_models(base, patch, append=append, update=update)
     post_load_report(base, f"Merged model '{path_out}'")
 
-    ret = save_pmx_file(base, path_out)
+    ret, msg = save_pmx_file(base, path_out)
     if not ret:
-        return False, f"Failed to save merged model to '{path_out}'. Please check the file path and permissions."
+        return False, f"Failed to save merged model to '{path_out}': {msg}"
 
     # report_empty_morphs(base)
     return True, f"Merge completed successfully ({path_base} + {path_patch} -> {path_out})"

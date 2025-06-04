@@ -4,7 +4,7 @@ from tkinter import filedialog, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import json
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 SETTINGS_FILE = "pmxmerge_settings.json"
 
 def save_settings(settings: dict):
@@ -57,16 +57,17 @@ def run_merge(base_path: str, patch_path: str, out_path: str = "", **kwargs):
         "DISPLAY": kwargs.get("append_display", True),
     }
     update = {
-        "BONE": kwargs.get("update_bones", True),
-        "MAT_SETTINGS": kwargs.get("update_mat_settings", True),
+        "BONE_LOC": kwargs.get("update_bone_location", True),
+        "BONE_SETTING": kwargs.get("update_bone_setting", True),
+        "MAT_SETTING": kwargs.get("update_mat_setting", True),
         "MORPH": kwargs.get("update_morphs", True),
         "PHYSICS": kwargs.get("update_physics", True),
         "DISPLAY": kwargs.get("update_display", True),
     }
 
-    # Remove False options to avoid unnecessary processing
-    append = {k: v for k, v in append.items() if v}
-    update = {k: v for k, v in update.items() if v}
+    # Remove False options
+    append = set(k for k, v in append.items() if v)
+    update = set(k for k, v in update.items() if v)
 
     # Debugging output
     ret, msg = pmxmerge.merge_pmx_files(
@@ -147,8 +148,9 @@ def main():
     append_physics_var = tk.BooleanVar(value=settings.get("append_physics", True))
     append_display_var = tk.BooleanVar(value=settings.get("append_display", False))
 
-    update_bones_var = tk.BooleanVar(value=settings.get("update_bones", True))
-    update_mat_settings_var = tk.BooleanVar(value=settings.get("update_mat_settings", True))
+    update_bone_location_var = tk.BooleanVar(value=settings.get("update_bone_location", True))
+    update_bone_setting_var = tk.BooleanVar(value=settings.get("update_bone_setting", True))
+    update_mat_setting_var = tk.BooleanVar(value=settings.get("update_mat_setting", True))
     update_morphs_var = tk.BooleanVar(value=settings.get("update_morphs", True))
     update_physics_var = tk.BooleanVar(value=settings.get("update_physics", True))
     update_display_var = tk.BooleanVar(value=settings.get("update_display", False))
@@ -178,7 +180,7 @@ def main():
 
         entry.drop_target_register(DND_FILES)
         def handle_drop(e):
-            var.set(e.data.strip('{}').split()[0])
+            var.set(e.data.strip('{}'))
             if on_update:
                 on_update()
         entry.dnd_bind('<<Drop>>', handle_drop)
@@ -217,27 +219,28 @@ def main():
     OPTIONS_APPEND = [
         ("Morphs", append_morphs_var, "Append new morphs from the patch model."),
         ("Physics", append_physics_var, "Append new physics from the patch model."),
-        ("Display Groups", append_display_var, "Append new display groups and their entries from the patch model."),
+        ("Display Groups", append_display_var, "Append new display slots and their entries from the patch model."),
     ]
     for i, (text, var, tooltip) in enumerate(OPTIONS_APPEND):
         create_checkbox(append_options_frame, text, var, i, tooltip)
 
-    # Label: Bones and Materials are always appended
+    # Add informational labels
     label = tk.Label(append_options_frame, text="* New Bones and Materials (and their mesh data) will always be appended.", font=("Arial", 9, "italic"), fg="green")
     label.grid(row=1, column=0, columnspan=5, pady=2, sticky="w")
-    # Label: Existing Material's mesh data is always replaced with patch models
-    label = tk.Label(append_options_frame, text="* Existing mesh data and corresponding Vertex/UV Morphs will always be merged.", font=("Arial", 9, "italic"), fg="green")
+    label = tk.Label(append_options_frame, text="* Existing mesh data (Faces and Vertices) will always be replaced.", font=("Arial", 9, "italic"), fg="green")
     label.grid(row=2, column=0, columnspan=5, pady=2, sticky="w")
-
+    label = tk.Label(append_options_frame, text="* Patch model's Vertex/UV Morphs will always be appended/merged/replaced into the base model.", font=("Arial", 9, "italic"), fg="green")
+    label.grid(row=3, column=0, columnspan=5, pady=2, sticky="w")
     # Update Options
     update_option_frame = tk.LabelFrame(frame, text="Update/Replace Existing", padx=10, pady=10)
     update_option_frame.grid(row=6, column=0, columnspan=5, pady=2, sticky="we")
     OPTIONS_UPDATE = [
-        ("Bone Settings", update_bones_var, "Update existing bone settings by using patch model's bones."),
-        ("Material Settings", update_mat_settings_var, "Update existing material settings (textures, colors, etc.) by using patch model's materials."),
+        ("Bone Location", update_bone_location_var, "Update existing bone locations (Location and Display options) by using patch model's bones."),
+        ("Bone Settings", update_bone_setting_var, "Update existing bone settings (parent, constraints, ik, flags, etc) by using patch model's bones."),
+        ("Material Settings", update_mat_setting_var, "Update existing material settings (textures, colors, etc.) by using patch model's materials."),
         ("Morphs", update_morphs_var, "Update existing morph settings by using patch model's morphs."),
         ("Physics", update_physics_var, "Update existing physics features (Rigid Bodies and Joints) by using patch model's physics."),
-        ("Display Groups", update_display_var, "Replace existing display groups by using patch model's display groups."),
+        ("Display Slots", update_display_var, "Replace existing display slots by using patch model's display slots."),
     ]
     for i, (text, var, tooltip) in enumerate(OPTIONS_UPDATE):
         create_checkbox(update_option_frame, text, var, i, tooltip)
@@ -254,8 +257,9 @@ def main():
             append_physics=append_physics_var.get(),
             append_display=append_display_var.get(),
 
-            update_bones=update_bones_var.get(),
-            update_mat_settings=update_mat_settings_var.get(),
+            update_bone_location=update_bone_location_var.get(),
+            update_bone_setting=update_bone_setting_var.get(),
+            update_mat_setting=update_mat_setting_var.get(),
             update_morphs=update_morphs_var.get(),
             update_physics=update_physics_var.get(),
             update_display=update_display_var.get()
@@ -281,8 +285,9 @@ def main():
             "append_morphs": append_morphs_var.get(),
             "append_physics": append_physics_var.get(),
             "append_display": append_display_var.get(),
-            "update_bones": update_bones_var.get(),
-            "update_mat_settings": update_mat_settings_var.get(),
+            "update_bone_location": update_bone_location_var.get(),
+            "update_bone_setting": update_bone_setting_var.get(),
+            "update_mat_setting": update_mat_setting_var.get(),
             "update_morphs": update_morphs_var.get(),
             "update_physics": update_physics_var.get(),
             "update_display": update_display_var.get(),

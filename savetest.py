@@ -2,6 +2,8 @@ import os
 import sys
 import time
 import pypmx
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def binary_compare(file1, file2):
     with open(file1, 'rb') as f1, open(file2, 'rb') as f2:
